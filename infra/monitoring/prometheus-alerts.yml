@@ -55,3 +55,56 @@ groups:
             minutes. This usually means the API is unstable and may be close to a
             full outage.
           runbook_url: https://github.com/barry01-hash/AnchorPoint/blob/main/infra/monitoring/README.md
+
+  # ---------------------------------------------------------------------------
+  # TLS certificate lifecycle alerts
+  # cert-manager exposes per-certificate expiry timestamps. These rules fire
+  # before Let's Encrypt certificates lapse so the on-call can investigate a
+  # failed auto-renewal before users see TLS errors.
+  # ---------------------------------------------------------------------------
+  - name: anchorpoint-certificate-lifecycle
+    interval: 5m
+    rules:
+      # Early warning: certificate will expire within 21 days. cert-manager is
+      # configured with renewBefore=360h (15 days), so this gives a 6-day buffer
+      # to investigate why the certificate has not already been renewed.
+      - alert: AnchorPointCertificateExpiringSoon
+        expr: |
+          (certmanager_certificate_expiration_timestamp_seconds - time())
+            / 86400 < 21
+          and certmanager_certificate_expiration_timestamp_seconds > 0
+        for: 10m
+        labels:
+          severity: warning
+          service: cert-manager
+          team: platform
+        annotations:
+          summary: TLS certificate {{ $labels.name }} expires in less than 21 days
+          description: >-
+            The certificate "{{ $labels.name }}" in namespace
+            "{{ $labels.namespace }}" expires in
+            {{ printf "%.0f" ((certmanager_certificate_expiration_timestamp_seconds - time()) / 86400) }}
+            days. cert-manager should auto-renew 15 days before expiry; investigate
+            why renewal has not occurred.
+          runbook_url: https://github.com/barry01-hash/AnchorPoint/blob/main/infra/k8s/cert-manager/CERTIFICATE_LIFECYCLE.md
+
+      # Critical: certificate will expire within 7 days and is at imminent risk
+      # of causing a service outage if renewal continues to fail.
+      - alert: AnchorPointCertificateExpiringCritical
+        expr: |
+          (certmanager_certificate_expiration_timestamp_seconds - time())
+            / 86400 < 7
+          and certmanager_certificate_expiration_timestamp_seconds > 0
+        for: 10m
+        labels:
+          severity: critical
+          service: cert-manager
+          team: platform
+        annotations:
+          summary: TLS certificate {{ $labels.name }} expires in less than 7 days
+          description: >-
+            The certificate "{{ $labels.name }}" in namespace
+            "{{ $labels.namespace }}" expires in
+            {{ printf "%.0f" ((certmanager_certificate_expiration_timestamp_seconds - time()) / 86400) }}
+            days. Immediate action is required to avoid a TLS outage.
+          runbook_url: https://github.com/barry01-hash/AnchorPoint/blob/main/infra/k8s/cert-manager/CERTIFICATE_LIFECYCLE.md
