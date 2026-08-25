@@ -61,10 +61,46 @@ describe('MetricsService', () => {
 
   it('should observe database query duration', async () => {
     metricsService.observeDbQuery('SELECT', 0.01);
-    
+
     const metrics = await metricsService.getMetrics();
     expect(metrics).toContain('db_query_duration_seconds');
     expect(metrics).toContain('query_type="SELECT"');
+  });
+
+  it('should expose database pool gauges (#1008)', async () => {
+    const metrics = await metricsService.getMetrics();
+    expect(metrics).toContain('db_pool_connections_active');
+    expect(metrics).toContain('db_pool_max_connections');
+  });
+
+  it('should publish the configured pool maximum', async () => {
+    metricsService.setDbPoolMaxConnections(20);
+
+    const metrics = await metricsService.getMetrics();
+    expect(metrics).toMatch(/db_pool_max_connections\{[^}]*\} 20/);
+  });
+
+  it('should track active pool connections as they are acquired and released', async () => {
+    metricsService.incrementDbPoolConnectionsActive();
+    metricsService.incrementDbPoolConnectionsActive();
+
+    let metrics = await metricsService.getMetrics();
+    expect(metrics).toMatch(/db_pool_connections_active\{[^}]*\} 2/);
+
+    metricsService.decrementDbPoolConnectionsActive();
+
+    metrics = await metricsService.getMetrics();
+    expect(metrics).toMatch(/db_pool_connections_active\{[^}]*\} 1/);
+  });
+
+  it('should reset pool gauges with the rest of the registry', async () => {
+    metricsService.setDbPoolMaxConnections(20);
+    metricsService.incrementDbPoolConnectionsActive();
+    metricsService.reset();
+
+    const metrics = await metricsService.getMetrics();
+    expect(metrics).not.toMatch(/db_pool_max_connections\{[^}]*\} 20/);
+    expect(metrics).not.toMatch(/db_pool_connections_active\{[^}]*\} 1/);
   });
 
 

@@ -2,7 +2,8 @@ global:
   resolve_timeout: 5m
 
 # Alertmanager can expand environment variables when started with
-# --config.expand-env=true. We use that to keep PagerDuty routing keys out of git.
+# --config.expand-env=true. We use that to keep PagerDuty routing keys and
+# Slack webhook URLs out of git.
 route:
   receiver: pagerduty-critical
   group_by: ['alertname', 'service', 'severity']
@@ -10,6 +11,14 @@ route:
   group_interval: 5m
   repeat_interval: 2h
   routes:
+    # API error spikes and database pool exhaustion (#1008) are mirrored to
+    # Slack first; `continue` lets them fall through to the PagerDuty
+    # severity routing below so paging behaviour is unchanged for every
+    # other alert.
+    - matchers:
+        - alertname=~"HighErrorRate|DatabaseConnectionExhausted"
+      receiver: slack-alerts
+      continue: true
     - matchers:
         - severity="warning"
       receiver: pagerduty-warning
@@ -48,6 +57,17 @@ receivers:
 
           {{ .CommonAnnotations.description }}
         source: AnchorPoint Prometheus
+        send_resolved: true
+
+  - name: slack-alerts
+    slack_configs:
+      - api_url: ${SLACK_WEBHOOK_URL}
+        channel: ${SLACK_ALERT_CHANNEL}
+        title: '{{ .CommonLabels.alertname }} — {{ .CommonLabels.service }} [{{ .CommonLabels.severity }}]'
+        text: |-
+          {{ .CommonAnnotations.summary }}
+
+          {{ .CommonAnnotations.description }}
         send_resolved: true
 
 inhibit_rules:

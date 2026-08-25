@@ -110,11 +110,20 @@ type PrismaMiddleware = (params: PrismaMiddlewareParams) => Promise<unknown>;
 const prismaAny = prisma as unknown as { $use?: (mw: unknown) => void };
 
 if (typeof prismaAny.$use === 'function') {
+  // Publish the configured pool ceiling so Prometheus can compute
+  // utilisation against db_pool_connections_active (#1008).
+  metricsService.setDbPoolMaxConnections(config.DB_CONNECTION_LIMIT);
+
   prismaAny.$use(async (params: PrismaMiddlewareParams, next: PrismaMiddleware) => {
     const start = process.hrtime.bigint();
+    // Track in-flight queries as active pool connections so saturation of
+    // the configured connection_limit is observable by the
+    // DatabaseConnectionExhausted alert.
+    metricsService.incrementDbPoolConnectionsActive();
     try {
       return await next(params);
     } finally {
+      metricsService.decrementDbPoolConnectionsActive();
       const end = process.hrtime.bigint();
       const seconds = Number(end - start) / 1e9;
       const queryType = `${params.model ?? 'raw'}.${params.action}`;

@@ -8,6 +8,8 @@ export class MetricsService {
   private activeConnections: Gauge<string>;
   private errorCounter: Counter<string>;
   private dbQueryDuration: Histogram<string>;
+  private dbPoolConnectionsActive: Gauge<string>;
+  private dbPoolMaxConnections: Gauge<string>;
   private apiVersionGauge: Gauge<string>;
   private sep38QuoteRequests: Counter<string>;
   private sep38QuoteDuration: Histogram<string>;
@@ -70,6 +72,21 @@ export class MetricsService {
       help: 'Duration of database queries in seconds',
       labelNames: ['query_type'] as const,
       buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1],
+      registers: [this.registry],
+    });
+
+    // Database connection-pool gauges (#1008): track in-flight pool
+    // connections against the configured Prisma `connection_limit` so
+    // Prometheus can alert on pool exhaustion.
+    this.dbPoolConnectionsActive = new promClient.Gauge({
+      name: 'db_pool_connections_active',
+      help: 'Current number of active database pool connections (in-flight queries)',
+      registers: [this.registry],
+    });
+
+    this.dbPoolMaxConnections = new promClient.Gauge({
+      name: 'db_pool_max_connections',
+      help: 'Configured maximum database connection-pool size',
       registers: [this.registry],
     });
 
@@ -146,6 +163,27 @@ export class MetricsService {
    */
   observeDbQuery(queryType: string, durationSeconds: number): void {
     this.dbQueryDuration.observe({ query_type: queryType }, durationSeconds);
+  }
+
+  /**
+   * Record a database pool connection being acquired (query started)
+   */
+  incrementDbPoolConnectionsActive(): void {
+    this.dbPoolConnectionsActive.inc();
+  }
+
+  /**
+   * Record a database pool connection being released (query finished)
+   */
+  decrementDbPoolConnectionsActive(): void {
+    this.dbPoolConnectionsActive.dec();
+  }
+
+  /**
+   * Publish the configured database connection-pool maximum
+   */
+  setDbPoolMaxConnections(maxConnections: number): void {
+    this.dbPoolMaxConnections.set(maxConnections);
   }
 
   /**

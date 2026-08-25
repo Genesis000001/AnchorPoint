@@ -150,6 +150,8 @@ services:
       - '--config.expand-env'
     environment:
       - PAGERDUTY_ROUTING_KEY=${PAGERDUTY_ROUTING_KEY}
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
+      - SLACK_ALERT_CHANNEL=${SLACK_ALERT_CHANNEL:-#alerts}
     restart: unless-stopped
     networks:
       - anchorpoint-network

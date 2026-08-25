@@ -1,8 +1,18 @@
 groups:
   - name: api-performance-alerts
     rules:
+      # Fires when HTTP 5xx responses exceed 5% of total HTTP traffic over a
+      # rolling 5-minute window (#1008). Evaluated per scrape job so the two
+      # backend metric endpoints are never double-counted against each other.
+      # Uses http_requests_total{status_code} as exposed by
+      # backend/src/services/metrics.service.ts.
       - alert: HighErrorRate
-        expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.02
+        expr: |
+          (
+            sum by (job) (rate(http_requests_total{status_code=~"5.."}[5m]))
+            /
+            sum by (job) (rate(http_requests_total[5m]))
+          ) > 0.05
         for: 2m
         labels:
           severity: critical
@@ -10,7 +20,35 @@ groups:
           team: platform
         annotations:
           summary: High 5xx HTTP response error rate detected
-          description: "5xx HTTP response error rate has exceeded 2% over the last 5 minutes (current rate: {{ $value }})."
+          description: >-
+            HTTP 5xx responses have exceeded 5% of total traffic over the last
+            5 minutes (current share: {{ $value | humanizePercentage }}).
+          runbook_url: https://github.com/ceejaylaboratory/AnchorPoint/blob/main/infra/monitoring/README.md
+
+      # Fires when in-flight database pool connections reach 90% of the
+      # configured Prisma connection_limit (#1008). Both gauges are exported
+      # by backend/src/services/metrics.service.ts; the maximum is published
+      # from DB_CONNECTION_LIMIT in backend/src/lib/prisma.ts.
+      - alert: DatabaseConnectionExhausted
+        expr: |
+          (
+            db_pool_connections_active
+              /
+            db_pool_max_connections
+          ) >= 0.9
+        for: 2m
+        labels:
+          severity: critical
+          service: anchorpoint-backend
+          team: platform
+        annotations:
+          summary: Database connection pool near exhaustion
+          description: >-
+            Active database connections have reached
+            {{ $value | humanizePercentage }} of the configured
+            connection-pool maximum for more than 2 minutes. New queries may
+            start timing out once the pool saturates.
+          runbook_url: https://github.com/ceejaylaboratory/AnchorPoint/blob/main/infra/monitoring/README.md
 
       - alert: HighP99Latency
         expr: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m])) > 1.0
