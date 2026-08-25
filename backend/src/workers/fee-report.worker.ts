@@ -68,9 +68,11 @@ feeReportWorker.on('error', (err) => {
 // If executed directly as worker process
 if (require.main === module) {
   logger.info('Fee report worker process started');
-  process.on('SIGINT', async () => {
+  const shutdown = async () => {
     logger.info('Shutting down fee report worker process...');
     await feeReportWorker.close();
     process.exit(0);
-  });
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
