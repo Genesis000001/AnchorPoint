@@ -63,11 +63,6 @@ impl LiquidationEngine {
         };
         env.storage().persistent().set(&DataKey::Vaults(id), &vault);
 
-        id = id.checked_add(1).expect("vault id overflow");
-        env.storage()
-            .persistent()
-            .set(&DataKey::Vaults(id), &vault);
-
         env.storage()
             .instance()
             .set(&DataKey::NextVaultId, &id.checked_add(1).expect("vault id overflow"));

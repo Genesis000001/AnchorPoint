@@ -9,3 +9,4 @@ nft-metadata = { path = "../nft_metadata" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+ed25519-dalek = { workspace = true }

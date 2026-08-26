@@ -458,6 +458,9 @@ mod tests {
         let bob = Address::generate(&env);
 
         client.mint(&alice, &1, &1000);
+        // Not approved before the operator approval is set
+        assert!(!client.is_approved_for_all(&alice, &operator));
+        assert!(!client.is_approved_for_all(&operator, &alice));
         client.set_approval_for_all(&alice, &operator, &true);
 
         assert!(client.is_approved_for_all(&alice, &operator));
@@ -598,6 +601,60 @@ mod tests {
 
         client.set_token_metadata(&token_id, &uri);
         assert_eq!(client.get_token_metadata(&token_id), uri);
+    }
+
+    // ============================================================================
+    // Balance history (get_past_balance / checkpoints)
+    // ============================================================================
+
+    #[test]
+    fn test_get_past_balance_no_transfer_history() {
+        let (env, client, _) = setup();
+        let alice = Address::generate(&env);
+        let stranger = Address::generate(&env);
+        let token_id = 1u64;
+
+        client.mint(&alice, &token_id, &1000);
+
+        // No checkpoints exist yet (last ledger defaults to 0), so the query
+        // falls back to the current balance.
+        assert_eq!(client.get_past_balance(&alice, &token_id, &50), 1000);
+        // A user with no balance at all returns 0.
+        assert_eq!(client.get_past_balance(&stranger, &token_id, &50), 0);
+    }
+
+    #[test]
+    fn test_get_past_balance_snapshots() {
+        let (env, client, _) = setup();
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+        let token_id = 1u64;
+
+        client.mint(&alice, &token_id, &1000);
+
+        // First transfer at ledger 100 checkpoints alice's pre-transfer balance
+        // (1000) at ledger 0; her balance becomes 700.
+        env.ledger().set_sequence_number(100);
+        client.transfer(&alice, &bob, &token_id, &300);
+
+        // Second transfer at ledger 200 checkpoints alice's pre-transfer balance
+        // (700) at ledger 100; her balance becomes 500. Bob's pre-transfer
+        // balance (0) is checkpointed at ledger 0.
+        env.ledger().set_sequence_number(200);
+        client.transfer(&alice, &bob, &token_id, &200);
+
+        // Ledger at/after the last checkpoint -> current balance
+        assert_eq!(client.get_past_balance(&alice, &token_id, &200), 500);
+        assert_eq!(client.get_past_balance(&alice, &token_id, &500), 500);
+
+        // Ledger before the last checkpoint -> snapshot recorded at that ledger
+        assert_eq!(client.get_past_balance(&alice, &token_id, &100), 700);
+        assert_eq!(client.get_past_balance(&alice, &token_id, &0), 1000);
+
+        // Bob's pre-transfer balance (300) was checkpointed at ledger 100
+        assert_eq!(client.get_past_balance(&bob, &token_id, &100), 300);
+        // Ledger before any snapshot -> 0
+        assert_eq!(client.get_past_balance(&bob, &token_id, &50), 0);
     }
 
     /// ============================================================================
