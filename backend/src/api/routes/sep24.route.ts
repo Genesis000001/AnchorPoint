@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
+import { QuoteStatus } from '@prisma/client';
 import {
   createWithdrawInteractiveUrl,
   createDepositInteractiveUrl,
@@ -147,7 +148,7 @@ router.post('/transactions/deposit/interactive', async (req: Request, res: Respo
     if (!quote) {
       return res.status(400).json({ error: 'Quote not found' });
     }
-    if (quote.expiresAt && new Date() > quote.expiresAt) {
+    if (quote.status === QuoteStatus.EXPIRED || (quote.expiresAt && new Date() > quote.expiresAt)) {
       return res.status(400).json({ error: 'Quote has expired' });
     }
   }
@@ -270,7 +271,7 @@ router.post('/transactions/withdraw/interactive', async (req: Request, res: Resp
     if (!quote) {
       return res.status(400).json({ error: 'Quote not found' });
     }
-    if (quote.expiresAt && new Date() > quote.expiresAt) {
+    if (quote.status === QuoteStatus.EXPIRED || (quote.expiresAt && new Date() > quote.expiresAt)) {
       return res.status(400).json({ error: 'Quote has expired' });
     }
   }

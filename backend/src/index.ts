@@ -44,6 +44,7 @@ import { validateStorageConfigOnStartup } from './services/storage-provider.serv
 import { uploadExpiryScheduler } from './workers/upload-expiry.scheduler';
 import { initSocket } from './lib/socket';
 import { kycExpiryScheduler } from './workers/kyc-expiry.scheduler';
+import { cleanupWorker } from './workers/cleanup.worker';
 
 let server: ReturnType<typeof app.listen> | null = null;
 let isShuttingDown = false;
@@ -66,6 +67,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
   feeReportScheduler.stop();
   uploadExpiryScheduler.stop();
   kycExpiryScheduler.stop();
+  cleanupWorker.stop();
 
   // Stop accepting new HTTP traffic; let in-flight requests finish.
   if (server) {
@@ -404,6 +406,7 @@ if (process.env.NODE_ENV !== 'test') {
           feeReportScheduler.start();
           uploadExpiryScheduler.start();
           kycExpiryScheduler.start();
+          cleanupWorker.start();
         });
       });
   })().catch((error) => {

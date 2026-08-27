@@ -241,18 +241,26 @@ model KycCustomer {
 }
 
 model Quote {
-  id            String   @id @default(uuid())
+  id            String      @id @default(uuid())
   sellAsset     String
   sellAmount    String
   buyAsset      String
   buyAmount     String
   price         String
+  status        QuoteStatus @default(PENDING)
   expiresAt     DateTime?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
 
   @@index([sellAsset])
   @@index([buyAsset])
+  @@index([status, expiresAt])
+}
+
+enum QuoteStatus {
+  PENDING
+  EXECUTED
+  EXPIRED
 }
 
 model SystemConfig {
