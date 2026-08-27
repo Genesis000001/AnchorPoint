@@ -4,6 +4,7 @@ import { authMiddleware } from '../middleware/auth.middleware';
 import { validate } from '../middleware/validate.middleware';
 import { z } from 'zod';
 import logger from '../../utils/logger';
+import adminAuditService, { getAuditActor } from '../../services/admin-audit.service';
 
 export function createFeatureFlagRouter(featureFlagService: FeatureFlagService): Router {
   const router = Router();
@@ -103,6 +104,13 @@ export function createFeatureFlagRouter(featureFlagService: FeatureFlagService):
 
         await featureFlagService.setFlag(name, newFlag);
 
+        await adminAuditService.recordConfigChange({
+          action: 'FEATURE_FLAG_CREATE',
+          actor: getAuditActor(req),
+          targetEntity: `feature_flag:${name}`,
+          after: newFlag as unknown as Record<string, unknown>,
+        });
+
         res.status(201).json({
           success: true,
           message: 'Feature flag created',
@@ -136,6 +144,8 @@ export function createFeatureFlagRouter(featureFlagService: FeatureFlagService):
           });
         }
 
+        const before = { ...flag };
+
         // Update flag properties
         if (updates.enabled !== undefined) {
           flag.enabled = updates.enabled;
@@ -148,6 +158,14 @@ export function createFeatureFlagRouter(featureFlagService: FeatureFlagService):
         }
 
         await featureFlagService.setFlag(flagName, flag);
+
+        await adminAuditService.recordConfigChange({
+          action: 'FEATURE_FLAG_UPDATE',
+          actor: getAuditActor(req),
+          targetEntity: `feature_flag:${flagName}`,
+          before: before as unknown as Record<string, unknown>,
+          after: flag as unknown as Record<string, unknown>,
+        });
 
         res.json({
           success: true,
@@ -182,6 +200,14 @@ export function createFeatureFlagRouter(featureFlagService: FeatureFlagService):
 
         await featureFlagService.enableFlag(flagName);
 
+        await adminAuditService.recordConfigChange({
+          action: 'FEATURE_FLAG_ENABLE',
+          actor: getAuditActor(req),
+          targetEntity: `feature_flag:${flagName}`,
+          before: { enabled: flag.enabled },
+          after: { enabled: true },
+        });
+
         res.json({
           success: true,
           message: `Feature flag '${flagName}' enabled`,
@@ -213,6 +239,14 @@ export function createFeatureFlagRouter(featureFlagService: FeatureFlagService):
         }
 
         await featureFlagService.disableFlag(flagName);
+
+        await adminAuditService.recordConfigChange({
+          action: 'FEATURE_FLAG_DISABLE',
+          actor: getAuditActor(req),
+          targetEntity: `feature_flag:${flagName}`,
+          before: { enabled: flag.enabled },
+          after: { enabled: false },
+        });
 
         res.json({
           success: true,
@@ -251,6 +285,14 @@ export function createFeatureFlagRouter(featureFlagService: FeatureFlagService):
         }
 
         await featureFlagService.updateRolloutPercentage(flagName, percentage);
+
+        await adminAuditService.recordConfigChange({
+          action: 'FEATURE_FLAG_ROLLOUT_UPDATE',
+          actor: getAuditActor(req),
+          targetEntity: `feature_flag:${flagName}`,
+          before: { rolloutPercentage: flag.rolloutPercentage },
+          after: { rolloutPercentage: percentage },
+        });
 
         res.json({
           success: true,
@@ -291,6 +333,14 @@ export function createFeatureFlagRouter(featureFlagService: FeatureFlagService):
 
         await featureFlagService.addTargetUsers(flagName, userIds);
 
+        await adminAuditService.recordConfigChange({
+          action: 'FEATURE_FLAG_TARGET_USERS_ADD',
+          actor: getAuditActor(req),
+          targetEntity: `feature_flag:${flagName}`,
+          before: { targetUsers: flag.targetUsers },
+          after: { addedUsers: userIds },
+        });
+
         res.json({
           success: true,
           message: `Target users added to '${flagName}'`,
@@ -330,6 +380,14 @@ export function createFeatureFlagRouter(featureFlagService: FeatureFlagService):
 
         await featureFlagService.removeTargetUsers(flagName, userIds);
 
+        await adminAuditService.recordConfigChange({
+          action: 'FEATURE_FLAG_TARGET_USERS_REMOVE',
+          actor: getAuditActor(req),
+          targetEntity: `feature_flag:${flagName}`,
+          before: { targetUsers: flag.targetUsers },
+          after: { removedUsers: userIds },
+        });
+
         res.json({
           success: true,
           message: `Target users removed from '${flagName}'`,
@@ -362,6 +420,13 @@ export function createFeatureFlagRouter(featureFlagService: FeatureFlagService):
         }
 
         await featureFlagService.deleteFlag(flagName);
+
+        await adminAuditService.recordConfigChange({
+          action: 'FEATURE_FLAG_DELETE',
+          actor: getAuditActor(req),
+          targetEntity: `feature_flag:${flagName}`,
+          before: flag as unknown as Record<string, unknown>,
+        });
 
         res.json({
           success: true,
