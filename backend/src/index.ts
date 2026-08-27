@@ -18,7 +18,9 @@ import metricsRouter from './api/routes/metrics.route';
 import relayerRouter from './api/routes/relayer.route';
 import recurringPaymentsRouter from './api/routes/recurring-payments.route';
 import configRouter from './api/routes/config.route';
+import multisigRouter from './api/routes/multisig.route';
 import sep31Router from './api/routes/sep31.route';
+
 import authRouter from './api/routes/auth.route';
 import { errorHandler } from './api/middleware/error.middleware';
 import { metricsMiddleware, connectionTracker } from './api/middleware/metrics.middleware';
@@ -306,8 +308,10 @@ app.use('/api/config', configRouter);
 app.use('/api/reports', feeReportRouter);
 app.use('/api/events', eventRouter);
 app.use('/api/notifications', notificationsRouter);
+app.use('/api/multisig', multisigRouter);
 
 // Relayer API for gasless token approvals
+
 app.use('/api/relayer', relayerRouter);
 
 // SEP-40 Swap Rates API

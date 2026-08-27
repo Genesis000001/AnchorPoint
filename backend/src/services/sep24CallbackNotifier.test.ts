@@ -124,4 +124,41 @@ describe('sep24CallbackNotifier', () => {
     expect(result.error).toContain('ECONNRESET');
     expect(enqueueRetry).toHaveBeenCalledTimes(1);
   });
+
+  it('builds a sep24.transaction.claimable payload when claimableBalanceId is provided', () => {
+    const payload = buildSep24StatusWebhookPayload({
+      ...baseInput,
+      nextStatus: 'pending_external',
+      claimableBalanceId: '00000000abc123',
+    });
+    expect(payload.event).toBe('sep24.transaction.claimable');
+    expect(payload.transaction.status).toBe('pending_external');
+    expect(payload.transaction.claimable_balance_id).toBe('00000000abc123');
+  });
+
+  it('sends x-anchorpoint-event header as sep24.transaction.claimable for claimable balance event', async () => {
+    const httpClient = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => 'ok',
+    });
+    const deliveryStore = new InMemoryWebhookDeliveryStore();
+
+    const result = await notifySep24StatusChange(
+      {
+        ...baseInput,
+        nextStatus: 'pending_external',
+        claimableBalanceId: '00000000abc123',
+        event: 'sep24.transaction.claimable',
+      },
+      { httpClient, deliveryStore, enqueueRetry: jest.fn() }
+    );
+
+    expect(result.delivered).toBe(true);
+    const [, request] = httpClient.mock.calls[0];
+    expect(request.headers['x-anchorpoint-event']).toBe('sep24.transaction.claimable');
+    const parsedBody = JSON.parse(request.body);
+    expect(parsedBody.event).toBe('sep24.transaction.claimable');
+    expect(parsedBody.transaction.claimable_balance_id).toBe('00000000abc123');
+  });
 });
