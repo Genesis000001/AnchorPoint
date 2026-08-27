@@ -27,7 +27,7 @@ import { CopyablePublicKey } from './components/CopyablePublicKey';
 import { WalletModal } from './components/WalletModal';
 import { NetworkSelector } from './components/NetworkSelector';
 import { SessionTimeoutModal } from './components/Auth/SessionTimeoutModal';
-import { FreighterAdapter } from './lib/wallet/FreighterAdapter';
+import { WalletManager } from './lib/wallet';
 import { I18nProvider, useTranslation } from './i18n/config';
 
 const ThemeContext = createContext<{
@@ -158,12 +158,13 @@ const App = () => {
   const [walletError, setWalletError] = useState('');
   const [walletModalOpen, setWalletModalOpen] = useState(false);
   const [walletSessionResetCounter, setWalletSessionResetCounter] = useState(0);
+  const [selectedWalletId, setSelectedWalletId] = useState<string | null>(null);
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     const stored = localStorage.getItem('theme');
     if (stored === 'light' || stored === 'dark') return stored;
     return 'dark';
   });
-  const walletAdapter = useMemo(() => new FreighterAdapter(), []);
+  const walletManager = useMemo(() => WalletManager.getInstance(), []);
   const { t, language, changeLanguage } = useTranslation();
 
   const toggleTheme = useCallback(() => {
@@ -193,9 +194,9 @@ const App = () => {
   }, []);
 
   const handleWalletDisconnect = useCallback(async (skipAdapterDisconnect = false) => {
-    if (!skipAdapterDisconnect) {
+    if (!skipAdapterDisconnect && selectedWalletId) {
       try {
-        await walletAdapter.disconnect();
+        await walletManager.disconnectWallet(selectedWalletId);
       } catch (error) {
         console.warn('Wallet disconnect cleanup failed:', error);
       }
@@ -205,9 +206,10 @@ const App = () => {
     setWallet(null);
     setWalletStatus('idle');
     setWalletError('');
+    setSelectedWalletId(null);
     setActiveTab('dashboard');
     setWalletSessionResetCounter((previous) => previous + 1);
-  }, [clearClientSessionState, walletAdapter]);
+  }, [clearClientSessionState, walletManager, selectedWalletId]);
 
   useEffect(() => {
     let ignore = false;
@@ -243,14 +245,16 @@ const App = () => {
 
   useEffect(() => {
     const handleExternalDisconnect = () => {
-      void handleWalletDisconnect(true);
+      if (selectedWalletId === 'freighter') {
+        void handleWalletDisconnect(true);
+      }
     };
 
     window.addEventListener('freighter:disconnect', handleExternalDisconnect);
     return () => {
       window.removeEventListener('freighter:disconnect', handleExternalDisconnect);
     };
-  }, [handleWalletDisconnect]);
+  }, [handleWalletDisconnect, selectedWalletId]);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia('(min-width: 768px)');
@@ -270,6 +274,14 @@ const App = () => {
     root.classList.add(theme);
   }, [theme]);
 
+  useEffect(() => {
+    // Load saved wallet preference
+    const savedWalletId = localStorage.getItem('preferredWalletId');
+    if (savedWalletId) {
+      setSelectedWalletId(savedWalletId);
+    }
+  }, []);
+
   const menuItems = useMemo(
     () => [
       { id: 'dashboard', icon: LayoutDashboard, label: t('nav.overview') },
@@ -286,30 +298,27 @@ const App = () => {
     [t],
   );
 
-  const handleConnectWallet = async () => {
+  const handleConnectWallet = async (walletId: string) => {
     setWalletStatus('connecting');
     setWalletError('');
 
     try {
-      const connectedWallet = await walletAdapter.connect();
+      const connectedWallet = await walletManager.connectWallet(walletId);
       setWallet(connectedWallet);
+      setSelectedWalletId(walletId);
       setWalletStatus('idle');
+      
+      // Save wallet preference to localStorage
+      localStorage.setItem('preferredWalletId', walletId);
     } catch (error) {
       setWalletStatus('error');
       setWalletError(error instanceof Error ? error.message : 'Unable to connect wallet.');
     }
   };
 
-  const handleWalletOptionSelect = async (walletId: 'freighter' | 'albedo' | 'rango') => {
+  const handleWalletOptionSelect = async (walletId: string) => {
     setWalletModalOpen(false);
-
-    if (walletId !== 'freighter') {
-      setWalletStatus('error');
-      setWalletError(`${walletId.charAt(0).toUpperCase()}${walletId.slice(1)} support will be available soon.`);
-      return;
-    }
-
-    await handleConnectWallet();
+    await handleConnectWallet(walletId);
   };
 
   return (
@@ -343,7 +352,7 @@ const App = () => {
         onSelect={handleWalletOptionSelect}
       >
         <div className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-950/80 px-3 py-2 text-xs text-slate-400">
-          <span>Freighter connection is available now.</span>
+          <span>Multiple wallet options available</span>
           <span>{walletStatus === 'connecting' ? 'Connecting…' : 'Select a provider to continue'}</span>
         </div>
       </WalletModal>
