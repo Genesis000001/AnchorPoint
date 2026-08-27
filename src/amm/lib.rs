@@ -3,7 +3,18 @@
 pub mod reentrancy_guard;
 
 use reentrancy_guard::{ReentrancyGuard, ReentrancyGuardError};
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, IntoVal};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
+    Env, IntoVal,
+};
+
+/// Errors returned by the AMM contract.
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AmmError {
+    /// The calculated output amount is below the caller's minimum threshold.
+    SlippageExceeded = 1,
+}
 
 #[contracttype]
 #[derive(Clone)]
@@ -227,7 +238,7 @@ impl AMM {
         let amount_out = numerator / denominator;
 
         if amount_out < min_amount_out {
-            panic!("slippage exceeded");
+            panic_with_error!(env, AmmError::SlippageExceeded);
         }
 
         // Update state
@@ -746,6 +757,37 @@ mod tests {
             client2.swap(&user, &token_id2, &dx, &(expected_out + 1));
         }));
         assert!(result.is_err(), "slippage guard must reject out+1");
+    }
+
+    /// Verify that swap rejects with AmmError::SlippageExceeded when
+    /// min_amount_out exceeds the CPMM output for the given trade.
+    /// This simulates price slippage: the pool moved and the user gets less
+    /// than they specified.
+    #[test]
+    fn test_swap_slippage_exceeded_error() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        // Deep pool: 1_000_000 each side — minimal slippage on small trades.
+        let (client, _cid, token_id) = setup_amm_with_reserves(&env, 1_000_000, 1_000_000);
+        let user = Address::generate(&env);
+
+        let amount_in: i128 = 1_000;
+        // CPMM formula: dy = (y * dx * 997) / (x * 1000 + dx * 997)
+        let amount_in_with_fee = amount_in * 997;
+        let true_out = (amount_in_with_fee * 1_000_000) / (1_000_000 * 1000 + amount_in_with_fee);
+
+        // min_amount_out = true_out + 1 simulates the user requiring an amount
+        // that the CPMM cannot satisfy → SlippageExceeded must be returned.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.swap(&user, &token_id, &amount_in, &(true_out + 1));
+        }));
+        assert!(result.is_err(), "SlippageExceeded must be triggered when min_amount_out > actual output");
+
+        // min_amount_out = true_out must succeed (exact boundary).
+        let (client2, _cid2, token_id2) = setup_amm_with_reserves(&env, 1_000_000, 1_000_000);
+        let out = client2.swap(&user, &token_id2, &amount_in, &true_out);
+        assert_eq!(out, true_out, "exact boundary swap must succeed");
     }
 }
 
