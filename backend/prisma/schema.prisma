@@ -80,6 +80,7 @@ enum RecurringPaymentRunStatus {
   PROCESSING
   SUCCEEDED
   FAILED
+  INSUFFICIENT_FUNDS
 }
 
 model RecurringPaymentSchedule {

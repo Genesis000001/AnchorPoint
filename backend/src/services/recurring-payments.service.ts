@@ -1,9 +1,11 @@
 import cronParser from 'cron-parser';
+import { Horizon, Keypair } from '@stellar/stellar-sdk';
 import prisma from '../lib/prisma';
 import logger from '../utils/logger';
 import { isValidStellarPublicKey } from '../utils/stellar-address';
 import { BatchPaymentService } from './batch-payment.service';
 import { config } from '../config/env';
+import { notificationService } from './notification.service';
 
 export type RecurringPaymentScheduleInput = {
   destination: string;
@@ -11,6 +13,27 @@ export type RecurringPaymentScheduleInput = {
   amount: string;
   cron: string;
 };
+
+export type RecurringPaymentErrorType =
+  | 'INSUFFICIENT_FUNDS'
+  | 'INVALID_CONFIG'
+  | 'PAYMENT_FAILED';
+
+export class RecurringPaymentError extends Error {
+  readonly type: RecurringPaymentErrorType;
+
+  constructor(type: RecurringPaymentErrorType, message: string) {
+    super(message);
+    this.name = 'RecurringPaymentError';
+    this.type = type;
+  }
+}
+
+/** Fixed delay before retrying an insufficient-funds failure (issue #935). */
+const INSUFFICIENT_FUNDS_RETRY_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+/** A schedule failing this many consecutive times triggers a user notification. */
+const FAILURE_NOTIFICATION_THRESHOLD = 2;
 
 export class RecurringPaymentsService {
   private readonly batchPaymentService: BatchPaymentService;
@@ -226,6 +249,70 @@ export class RecurringPaymentsService {
     });
   }
 
+  /**
+   * Pre-flight balance check: confirm the distribution (payer) account holds
+   * enough of `assetCode` to cover `amount` before any payment is queued or
+   * executed.
+   *
+   * Returns `true` when the balance covers the amount. Throws a
+   * {@link RecurringPaymentError} of type `INSUFFICIENT_FUNDS` when it does not
+   * (so callers can classify the failure and schedule the 24h retry).
+   *
+   * When the payer secret is not configured, the check is skipped and the
+   * caller proceeds to execution (the batch service reports the real error).
+   */
+  async checkSufficientBalance(params: {
+    amount: string;
+    assetCode: string;
+    sourceSecretKey?: string;
+  }): Promise<boolean> {
+    const sourceSecretKey = params.sourceSecretKey ?? config.STELLAR_DISTRIBUTION_SECRET;
+    if (!sourceSecretKey) {
+      return true;
+    }
+
+    const sourceKeypair = Keypair.fromSecret(sourceSecretKey);
+    const sourcePublicKey = sourceKeypair.publicKey();
+
+    const server = new Horizon.Server(config.STELLAR_HORIZON_URL);
+    const account = await server.loadAccount(sourcePublicKey);
+
+    const required = Number.parseFloat(params.amount);
+    const isNative =
+      params.assetCode === 'XLM' || params.assetCode === 'native' || !params.assetCode;
+
+    let available = 0;
+    for (const balance of account.balances) {
+      if (isNative && balance.asset_type === 'native') {
+        available = Number.parseFloat(balance.balance);
+        break;
+      }
+      if (
+        !isNative &&
+        (balance.asset_type === 'credit_alphanum4' || balance.asset_type === 'credit_alphanum12') &&
+        balance.asset_code === params.assetCode
+      ) {
+        available = Number.parseFloat(balance.balance);
+        break;
+      }
+    }
+
+    if (available < required) {
+      logger.warn('Recurring payment pre-flight balance check failed', {
+        sourcePublicKey,
+        assetCode: params.assetCode,
+        available,
+        required,
+      });
+      throw new RecurringPaymentError(
+        'INSUFFICIENT_FUNDS',
+        `Insufficient balance in distribution account: ${available} ${params.assetCode} available, ${params.amount} required`
+      );
+    }
+
+    return true;
+  }
+
   async processDueSchedules(params: { now?: Date; limit?: number } = {}): Promise<number> {
     const now = params.now ?? new Date();
     const limit = params.limit ?? 25;
@@ -298,6 +385,15 @@ export class RecurringPaymentsService {
           throw new Error('STELLAR_DISTRIBUTION_SECRET is not configured');
         }
 
+        // Pre-flight balance check before execution. Insufficient funds is
+        // classified separately (see catch below) and schedules a fixed 24h
+        // retry instead of a generic backoff failure.
+        await this.checkSufficientBalance({
+          amount: schedule.amount,
+          assetCode: schedule.assetCode,
+          sourceSecretKey,
+        });
+
         const result = await this.batchPaymentService.executeBatch({
           payments: [
             {
@@ -340,14 +436,32 @@ export class RecurringPaymentsService {
         const failedAttempt = run.attempt;
         const maxRetries = config.RECURRING_PAYMENTS_MAX_RETRIES;
 
+        // Insufficient funds gets a fixed 24h retry (a funding problem is not
+        // resolved by exponential backoff) and a dedicated run status so the
+        // failure is distinguishable from a generic payment error.
+        const isInsufficientFunds =
+          error instanceof RecurringPaymentError && error.type === 'INSUFFICIENT_FUNDS';
+
         // Decide whether to retry this occurrence with exponential backoff or
         // give up and defer to the next cron-scheduled run.
         const shouldRetry = failedAttempt <= maxRetries;
 
         let nextRunAt: Date;
         let nextRetryCount: number;
+        let runStatus: 'FAILED' | 'INSUFFICIENT_FUNDS' = 'FAILED';
 
-        if (shouldRetry) {
+        if (isInsufficientFunds) {
+          nextRunAt = new Date(now.getTime() + INSUFFICIENT_FUNDS_RETRY_MS);
+          nextRetryCount = failedAttempt;
+          runStatus = 'INSUFFICIENT_FUNDS';
+          logger.warn('Recurring payment run failed; insufficient funds, retrying in 24h', {
+            scheduleId: schedule.id,
+            runId: run.id,
+            attempt: failedAttempt,
+            nextRunAt: nextRunAt.toISOString(),
+            error: message,
+          });
+        } else if (shouldRetry) {
           const delayMs = this.computeBackoffDelayMs(failedAttempt);
           nextRunAt = new Date(now.getTime() + delayMs);
           nextRetryCount = failedAttempt;
@@ -378,7 +492,7 @@ export class RecurringPaymentsService {
           prisma.recurringPaymentRun.update({
             where: { id: run.id },
             data: {
-              status: 'FAILED',
+              status: runStatus,
               error: message,
               finishedAt: new Date(),
             },
@@ -393,6 +507,22 @@ export class RecurringPaymentsService {
             },
           }),
         ]);
+
+        // Notify the user when a payment has failed twice consecutively.
+        const recentFailedRuns = await prisma.recurringPaymentRun.count({
+          where: {
+            scheduleId: schedule.id,
+            status: { in: ['FAILED', 'INSUFFICIENT_FUNDS'] },
+          },
+        });
+
+        if (recentFailedRuns >= FAILURE_NOTIFICATION_THRESHOLD) {
+          await notificationService.notify(
+            schedule.userId,
+            `Recurring payment of ${schedule.amount} ${schedule.assetCode} to ${schedule.destination} has failed ${recentFailedRuns} times. Please check your funding source.`,
+            run.id
+          );
+        }
 
         processed += 1;
       }

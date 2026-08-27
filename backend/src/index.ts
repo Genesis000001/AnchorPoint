@@ -25,6 +25,7 @@ import authRouter from './api/routes/auth.route';
 import { errorHandler } from './api/middleware/error.middleware';
 import { metricsMiddleware, connectionTracker } from './api/middleware/metrics.middleware';
 import { securityHeadersMiddleware } from './api/middleware/security-headers.middleware';
+import { sanitizeBodyMiddleware } from './api/middleware/sanitize.middleware';
 import { tracingMiddleware } from './api/middleware/tracing.middleware';
 import configService from './services/config.service';
 import { stellarService } from './services/stellar.service';
@@ -135,6 +136,7 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(sanitizeBodyMiddleware);
 
 /**
  * @swagger
