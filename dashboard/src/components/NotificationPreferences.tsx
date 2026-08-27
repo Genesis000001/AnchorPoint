@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Mail, MessageSquare, Bell, Save, AlertCircle, CheckCircle } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { Mail, MessageSquare, Bell, Save, AlertCircle, CheckCircle, RotateCcw } from 'lucide-react';
 
 interface NotificationPreferencesProps {
   apiBaseUrl?: string;
@@ -12,25 +12,46 @@ interface Preferences {
   phone?: string;
 }
 
+/**
+ * Shipping defaults the reset action restores: email on, the channels that
+ * need an extra opt-in off.
+ */
+export const DEFAULT_PREFERENCES: Preferences = {
+  emailEnabled: true,
+  smsEnabled: false,
+  pushEnabled: false,
+  phone: '',
+};
+
+/** Compared against the last saved snapshot to drive the dirty state. */
+const isSamePreferences = (a: Preferences, b: Preferences): boolean =>
+  a.emailEnabled === b.emailEnabled &&
+  a.smsEnabled === b.smsEnabled &&
+  a.pushEnabled === b.pushEnabled &&
+  (a.phone ?? '') === (b.phone ?? '');
+
 export const NotificationPreferences: React.FC<NotificationPreferencesProps> = ({
   apiBaseUrl = 'http://localhost:3002',
 }) => {
-  const [preferences, setPreferences] = useState<Preferences>({
-    emailEnabled: true,
-    smsEnabled: false,
-    pushEnabled: false,
-    phone: '',
-  });
+  const [preferences, setPreferences] = useState<Preferences>(DEFAULT_PREFERENCES);
+  /** What the server last confirmed; the baseline for "unsaved changes". */
+  const [savedPreferences, setSavedPreferences] = useState<Preferences>(DEFAULT_PREFERENCES);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
 
-  useEffect(() => {
-    fetchPreferences();
-  }, []);
+  const isDirty = useMemo(
+    () => !isSamePreferences(preferences, savedPreferences),
+    [preferences, savedPreferences],
+  );
 
-  const fetchPreferences = async () => {
+  const isDefault = useMemo(
+    () => isSamePreferences(preferences, DEFAULT_PREFERENCES),
+    [preferences],
+  );
+
+  const fetchPreferences = useCallback(async () => {
     setLoading(true);
     setError(null);
 
@@ -47,54 +68,86 @@ export const NotificationPreferences: React.FC<NotificationPreferencesProps> = (
         throw new Error('Failed to fetch preferences');
       }
 
-      const data = await response.json();
-      setPreferences(data.data);
+      const body = await response.json();
+      // Merge over the defaults: a response missing a channel would otherwise
+      // leave that toggle undefined and make it an uncontrolled input.
+      const next: Preferences = { ...DEFAULT_PREFERENCES, ...(body?.data ?? {}) };
+      setPreferences(next);
+      setSavedPreferences(next);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
       console.error('Error fetching preferences:', err);
     } finally {
       setLoading(false);
     }
-  };
+  }, [apiBaseUrl]);
 
-  const savePreferences = async () => {
-    setSaving(true);
-    setError(null);
-    setSuccess(false);
+  useEffect(() => {
+    fetchPreferences();
+  }, [fetchPreferences]);
 
-    try {
-      const token = localStorage.getItem('authToken');
-      const response = await fetch(`${apiBaseUrl}/api/notifications/preferences`, {
-        method: 'PATCH',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(preferences),
-      });
+  const savePreferences = useCallback(
+    async (next: Preferences = preferences) => {
+      setSaving(true);
+      setError(null);
+      setSuccess(false);
 
-      if (!response.ok) {
-        throw new Error('Failed to save preferences');
+      try {
+        const token = localStorage.getItem('authToken');
+        const response = await fetch(`${apiBaseUrl}/api/notifications/preferences`, {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(next),
+        });
+
+        if (!response.ok) {
+          throw new Error('Failed to save preferences');
+        }
+
+        // Only now is this the persisted state, so the form stops reading dirty.
+        setSavedPreferences(next);
+        setSuccess(true);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Unknown error');
+        console.error('Error saving preferences:', err);
+      } finally {
+        setSaving(false);
       }
+    },
+    [apiBaseUrl, preferences],
+  );
 
-      setSuccess(true);
-      setTimeout(() => setSuccess(false), 3000);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
-      console.error('Error saving preferences:', err);
-    } finally {
-      setSaving(false);
-    }
-  };
+  // Clear the confirmation on a timer the unmount can cancel, rather than
+  // leaving a setTimeout to fire into an unmounted component.
+  useEffect(() => {
+    if (!success) return;
+    const timer = setTimeout(() => setSuccess(false), 3000);
+    return () => clearTimeout(timer);
+  }, [success]);
 
   const handleToggle = (key: keyof Preferences) => {
     setPreferences((prev) => ({
       ...prev,
       [key]: !prev[key],
     }));
+    setSuccess(false);
   };
 
+  /**
+   * Restores the shipping defaults and persists them, so the button is a
+   * complete action rather than one that leaves the form dirty.
+   */
+  const handleReset = useCallback(() => {
+    setPreferences(DEFAULT_PREFERENCES);
+    setSuccess(false);
+    void savePreferences(DEFAULT_PREFERENCES);
+  }, [savePreferences]);
+
   const handlePhoneChange = (phone: string) => {
+    setSuccess(false);
     setPreferences((prev) => ({
       ...prev,
       phone,
@@ -104,7 +157,7 @@ export const NotificationPreferences: React.FC<NotificationPreferencesProps> = (
   if (loading) {
     return (
       <div className="glass-card p-8">
-        <div className="flex items-center justify-center">
+        <div className="flex items-center justify-center" role="status" aria-label="Loading preferences">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-slate-700 border-t-primary" />
         </div>
       </div>
@@ -220,29 +273,48 @@ export const NotificationPreferences: React.FC<NotificationPreferencesProps> = (
           </div>
         </div>
 
-        <div className="mt-6 flex items-center justify-between">
-          <div>
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
+          {/* One live region for both outcomes, so a save result is announced
+              once rather than racing two separate regions. */}
+          <div role="status" aria-live="polite" className="min-h-5">
             {error && (
               <div className="flex items-center gap-2 text-sm text-red-400">
-                <AlertCircle size={16} />
+                <AlertCircle size={16} aria-hidden="true" />
                 <span>{error}</span>
               </div>
             )}
-            {success && (
+            {!error && success && (
               <div className="flex items-center gap-2 text-sm text-emerald-400">
-                <CheckCircle size={16} />
+                <CheckCircle size={16} aria-hidden="true" />
                 <span>Preferences saved successfully</span>
               </div>
             )}
+            {!error && !success && isDirty && (
+              <span className="text-sm text-slate-400">Unsaved changes</span>
+            )}
           </div>
-          <button
-            onClick={savePreferences}
-            disabled={saving}
-            className="action-button flex items-center gap-2 rounded-lg bg-primary px-6 py-2 font-medium text-white hover:bg-primary/90 disabled:opacity-50"
-          >
-            <Save size={18} />
-            {saving ? 'Saving...' : 'Save Preferences'}
-          </button>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleReset}
+              disabled={saving || isDefault}
+              aria-label="Reset notification preferences to defaults"
+              className="action-button flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/50 px-4 py-2 font-medium text-slate-200 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <RotateCcw size={16} aria-hidden="true" />
+              Reset to defaults
+            </button>
+            <button
+              type="button"
+              onClick={() => void savePreferences()}
+              disabled={saving || !isDirty}
+              className="action-button flex items-center gap-2 rounded-lg bg-primary px-6 py-2 font-medium text-white hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Save size={18} aria-hidden="true" />
+              {saving ? 'Saving...' : 'Save Preferences'}
+            </button>
+          </div>
         </div>
       </div>
 
