@@ -15,6 +15,24 @@ const mockRedisClient = {
 
 const redisService = new RedisService(mockRedisClient);
 
+// Explicitly handle CORS pre-flight for SEP-10 endpoints to ensure
+// external web wallets can perform OPTIONS pre-flight checks.
+router.options('/', (req: Request, res: Response) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  return res.sendStatus(204);
+});
+
+router.options('/token', (req: Request, res: Response) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  return res.sendStatus(204);
+});
+
 /**
  * @swagger
  * /auth:
