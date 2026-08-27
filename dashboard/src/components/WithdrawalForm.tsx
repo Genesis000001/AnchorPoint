@@ -3,6 +3,7 @@ import type { FormEvent } from 'react';
 import { AlertCircle, CheckCircle2 } from 'lucide-react';
 import type { FieldRequirement } from '../types';
 import { validateField, validateAll } from '../lib/validation';
+import { useTranslation } from '../i18n/config';
 
 interface FormValues {
   [key: string]: string;
@@ -27,6 +28,7 @@ const getFieldType = (key: string): React.HTMLInputTypeAttribute => {
 
 export const WithdrawalForm = ({ fields, onSubmit }: WithdrawalFormProps) => {
   const formId = useId();
+  const { t } = useTranslation();
   const [values, setValues] = useState<FormValues>(() =>
     Object.fromEntries(fields.map((f) => [f.key, ''])),
   );
@@ -38,7 +40,7 @@ export const WithdrawalForm = ({ fields, onSubmit }: WithdrawalFormProps) => {
     setValues((prev) => ({ ...prev, [key]: value }));
     if (touched[key]) {
       const field = fields.find((f) => f.key === key)!;
-      const err = validateField(field, value);
+      const err = validateField(field, value, t);
       setErrors((prev) => ({ ...prev, [key]: err }));
     }
   };
@@ -46,7 +48,7 @@ export const WithdrawalForm = ({ fields, onSubmit }: WithdrawalFormProps) => {
   const handleBlur = (key: string) => {
     setTouched((prev) => ({ ...prev, [key]: true }));
     const field = fields.find((f) => f.key === key)!;
-    const err = validateField(field, values[key] ?? '');
+    const err = validateField(field, values[key] ?? '', t);
     setErrors((prev) => ({ ...prev, [key]: err }));
   };
 
@@ -56,7 +58,7 @@ export const WithdrawalForm = ({ fields, onSubmit }: WithdrawalFormProps) => {
     const allTouched = Object.fromEntries(fields.map((f) => [f.key, true]));
     setTouched(allTouched);
 
-    const allErrors = validateAll(fields, values);
+    const allErrors = validateAll(fields, values, t);
     setErrors(allErrors);
 
     if (Object.keys(allErrors).length === 0) {
@@ -71,7 +73,7 @@ export const WithdrawalForm = ({ fields, onSubmit }: WithdrawalFormProps) => {
     <form
       onSubmit={handleSubmit}
       noValidate
-      aria-label="Withdrawal form"
+      aria-label={t('withdraw.formAriaLabel')}
       className="space-y-5"
     >
       {/* Summary error alert shown after first submit attempt */}
@@ -83,7 +85,10 @@ export const WithdrawalForm = ({ fields, onSubmit }: WithdrawalFormProps) => {
         >
           <AlertCircle size={16} className="mt-0.5 shrink-0 text-rose-400" aria-hidden="true" />
           <p className="text-sm text-rose-300">
-            Please fix {errorCount} error{errorCount !== 1 ? 's' : ''} before continuing.
+            {t('withdraw.errors.inlineSummary', {
+              count: errorCount,
+              s: errorCount !== 1 ? 's' : '',
+            })}
           </p>
         </div>
       )}
@@ -104,11 +109,11 @@ export const WithdrawalForm = ({ fields, onSubmit }: WithdrawalFormProps) => {
               {field.label}
               {field.required ? (
                 <span className="text-xs font-normal text-amber-400" aria-hidden="true">
-                  Required
+                  {t('withdraw.required')}
                 </span>
               ) : (
                 <span className="text-xs font-normal text-slate-400" aria-hidden="true">
-                  Optional
+                  {t('withdraw.optional')}
                 </span>
               )}
             </label>
@@ -171,7 +176,7 @@ export const WithdrawalForm = ({ fields, onSubmit }: WithdrawalFormProps) => {
         type="submit"
         className="btn-primary w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-text"
       >
-        Continue to Verification
+        {t('withdraw.submit')}
       </button>
     </form>
   );

@@ -149,6 +149,36 @@ const TabFallback = () => (
 );
 
 const App = () => {
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    const stored = localStorage.getItem('theme');
+    if (stored === 'light' || stored === 'dark') return stored;
+    return 'dark';
+  });
+
+  const toggleTheme = useCallback(() => {
+    setTheme((prev) => {
+      const next = prev === 'dark' ? 'light' : 'dark';
+      localStorage.setItem('theme', next);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.remove('light', 'dark');
+    root.classList.add(theme);
+  }, [theme]);
+
+  return (
+    <ThemeContext.Provider value={{ theme, toggleTheme }}>
+      <I18nProvider>
+        <AppShell />
+      </I18nProvider>
+    </ThemeContext.Provider>
+  );
+};
+
+const AppShell = () => {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [uiConfig, setUiConfig] = useState<UiConfig>(defaultUiConfig);
@@ -158,21 +188,8 @@ const App = () => {
   const [walletError, setWalletError] = useState('');
   const [walletModalOpen, setWalletModalOpen] = useState(false);
   const [walletSessionResetCounter, setWalletSessionResetCounter] = useState(0);
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    const stored = localStorage.getItem('theme');
-    if (stored === 'light' || stored === 'dark') return stored;
-    return 'dark';
-  });
   const walletAdapter = useMemo(() => new FreighterAdapter(), []);
   const { t, language, changeLanguage } = useTranslation();
-
-  const toggleTheme = useCallback(() => {
-    setTheme((prev) => {
-      const next = prev === 'dark' ? 'light' : 'dark';
-      localStorage.setItem('theme', next);
-      return next;
-    });
-  }, []);
 
   const clearClientSessionState = useCallback(() => {
     const shouldClearKey = (key: string) => /token|session|wallet|transaction|balance/i.test(key);
@@ -264,12 +281,6 @@ const App = () => {
     };
   }, []);
 
-  useEffect(() => {
-    const root = document.documentElement;
-    root.classList.remove('light', 'dark');
-    root.classList.add(theme);
-  }, [theme]);
-
   const menuItems = useMemo(
     () => [
       { id: 'dashboard', icon: LayoutDashboard, label: t('nav.overview') },
@@ -313,8 +324,6 @@ const App = () => {
   };
 
   return (
-    <ThemeContext.Provider value={{ theme, toggleTheme }}>
-    <I18nProvider>
     <div
       className="min-h-screen flex"
       style={
@@ -419,12 +428,13 @@ const App = () => {
               <select
                 aria-label={t('language.label')}
                 value={language}
-                onChange={(event) => changeLanguage(event.target.value as 'en' | 'es' | 'pt')}
+                onChange={(event) => changeLanguage(event.target.value as 'en' | 'es' | 'pt' | 'fr')}
                 className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-2 text-sm text-slate-200"
               >
                 <option value="en">{t('language.en')}</option>
                 <option value="es">{t('language.es')}</option>
                 <option value="pt">{t('language.pt')}</option>
+                <option value="fr">{t('language.fr')}</option>
               </select>
               <NetworkSelector apiBaseUrl={apiBaseUrl} />
               <UserAvatarDropdown
@@ -518,7 +528,6 @@ const App = () => {
         </section>
       </main>
     </div>
-    </ThemeContext.Provider>
   );
 };
 
@@ -535,7 +544,6 @@ const ThemeToggle = () => {
       {theme === 'dark' ? <Sun size={16} aria-hidden="true" /> : <Moon size={16} aria-hidden="true" />}
       <span className="hidden sm:inline">{theme === 'dark' ? 'Light' : 'Dark'}</span>
     </button>
-    </I18nProvider>
   );
 };
 

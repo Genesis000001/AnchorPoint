@@ -22,6 +22,97 @@
     "label": "Language",
     "en": "English",
     "es": "Español",
-    "pt": "Português"
+    "pt": "Português",
+    "fr": "Français"
+  },
+  "deposit": {
+    "formAriaLabel": "Deposit {{asset}} details form",
+    "required": "Required",
+    "optional": "Optional",
+    "submit": "Continue to Verification",
+    "errors": {
+      "required": "{{label}} is required.",
+      "amountInvalid": "Enter a valid amount (e.g. 120.50).",
+      "amountPositive": "Deposit amount must be greater than zero.",
+      "amountMin": "Minimum deposit amount is $10.",
+      "amountMax": "Deposit amount exceeds the maximum single-transaction limit.",
+      "emailInvalid": "Enter a valid email address.",
+      "walletInvalid": "Enter a valid Stellar wallet address starting with G.",
+      "title": "Unable to Process Deposit",
+      "summary": "Please fix {{count}} validation error{{s}} before continuing.",
+      "details": "Review the highlighted fields below for specific issues.",
+      "inlineSummary": "Please fix {{count}} error{{s}} in the form before continuing."
+    }
+  },
+  "withdraw": {
+    "formAriaLabel": "Withdrawal form",
+    "required": "Required",
+    "optional": "Optional",
+    "submit": "Continue to Verification",
+    "errors": {
+      "inlineSummary": "Please fix {{count}} error{{s}} before continuing."
+    }
+  },
+  "kyc": {
+    "title": "Customer Details",
+    "subtitle": "Provide the identity information required by the anchor to open your account.",
+    "firstName": "First Name",
+    "lastName": "Last Name",
+    "emailAddress": "Email Address",
+    "mobileNumber": "Mobile Number",
+    "identityDocument": "Identity Document",
+    "identityNumber": "Identity Number",
+    "placeholders": {
+      "firstName": "Ada",
+      "lastName": "Lovelace",
+      "email": "name@example.com",
+      "mobile": "+14155552671",
+      "identityNumber": "A1234567"
+    },
+    "hints": {
+      "mobile": "Include the country code, e.g. +14155552671."
+    },
+    "idTypes": {
+      "nationalId": "National ID",
+      "passport": "Passport",
+      "driversLicense": "Driver's License"
+    },
+    "errors": {
+      "firstNameMin": "First name must be at least 2 characters.",
+      "firstNameMax": "First name must not exceed 64 characters.",
+      "lastNameMin": "Last name must be at least 2 characters.",
+      "lastNameMax": "Last name must not exceed 64 characters.",
+      "emailRequired": "Email address is required.",
+      "emailMax": "Email address must not exceed 254 characters.",
+      "emailInvalid": "Enter a valid email address, e.g. name@example.com.",
+      "mobileRequired": "Mobile number is required.",
+      "mobileInvalid": "Enter the number in international format, e.g. +14155552671.",
+      "identityRequired": "Identity number is required.",
+      "identityAlphanumeric": "Identity number must contain only letters and digits.",
+      "passportInvalid": "Passport numbers are 6–9 letters or digits.",
+      "identityLength": "Identity number must be between 5 and 20 characters."
+    },
+    "success": "Customer details submitted for verification.",
+    "submit": "Submit for Verification",
+    "submitting": "Submitting…"
+  },
+  "validation": {
+    "required": "{{label}} is required.",
+    "amountInvalid": "Enter a valid amount (e.g. 120.50).",
+    "amountPositive": "Amount must be greater than zero.",
+    "amountMax": "Amount exceeds the maximum single-transaction limit.",
+    "bankAccount": "Bank account must be 6–20 digits.",
+    "stellarInvalid": "Enter a valid Stellar wallet address starting with G (56 characters).",
+    "addressShort": "Address must be at least 5 characters.",
+    "addressLong": "Address must not exceed 200 characters.",
+    "addressLetters": "Address must contain letters.",
+    "lengthMin": "Must be at least {{min}} characters ({{len}} current).",
+    "lengthMax": "Must not exceed {{max}} characters ({{len}} current).",
+    "emailInvalid": "Enter a valid email address.",
+    "emailMax": "Email must not exceed 254 characters.",
+    "ibanFormat": "IBAN must start with a 2-letter country code followed by 2 check digits.",
+    "ibanCountryLength": "IBAN for {{country}} must be exactly {{length}} characters (got {{len}}).",
+    "ibanRange": "IBAN must be between 8 and 34 characters.",
+    "ibanChecksum": "IBAN check digits are invalid."
   }
 }

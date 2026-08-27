@@ -4,6 +4,7 @@ import { AlertCircle, CheckCircle2 } from 'lucide-react';
 import type { FieldRequirement } from '../types';
 import type { DepositError } from './DepositErrorAlert';
 import { DepositErrorAlert } from './DepositErrorAlert';
+import { useTranslation } from '../i18n/config';
 
 interface FormValues {
   [key: string]: string;
@@ -26,17 +27,19 @@ const AMOUNT_PATTERN = /^\d+(\.\d{1,2})?$/;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const WALLET_PATTERN = /^G[A-Z0-9]{55}$/;
 
+type TranslateFn = (key: string, params?: Record<string, string | number>) => string;
+
 const getFieldType = (key: string): React.HTMLInputTypeAttribute => {
   if (key.toLowerCase().includes('amount')) return 'number';
   if (key.toLowerCase().includes('email')) return 'email';
   return 'text';
 };
 
-const validateField = (field: FieldRequirement, value: string): string => {
+const validateField = (field: FieldRequirement, value: string, t: TranslateFn): string => {
   const trimmed = value.trim();
 
   if (field.required && !trimmed) {
-    return `${field.label} is required.`;
+    return t('deposit.errors.required', { label: field.label });
   }
 
   if (!trimmed) return '';
@@ -45,33 +48,33 @@ const validateField = (field: FieldRequirement, value: string): string => {
 
   if (key.includes('amount')) {
     if (!AMOUNT_PATTERN.test(trimmed)) {
-      return 'Enter a valid amount (e.g. 120.50).';
+      return t('deposit.errors.amountInvalid');
     }
     const num = parseFloat(trimmed);
-    if (num <= 0) return 'Deposit amount must be greater than zero.';
-    if (num < 10) return 'Minimum deposit amount is $10.';
-    if (num > 100_000) return 'Deposit amount exceeds the maximum single-transaction limit.';
+    if (num <= 0) return t('deposit.errors.amountPositive');
+    if (num < 10) return t('deposit.errors.amountMin');
+    if (num > 100_000) return t('deposit.errors.amountMax');
   }
 
   if (key.includes('email')) {
     if (!EMAIL_PATTERN.test(trimmed)) {
-      return 'Enter a valid email address.';
+      return t('deposit.errors.emailInvalid');
     }
   }
 
   if (key.includes('wallet') || key.includes('address')) {
     if (!WALLET_PATTERN.test(trimmed)) {
-      return 'Enter a valid Stellar wallet address starting with G.';
+      return t('deposit.errors.walletInvalid');
     }
   }
 
   return '';
 };
 
-const validateAll = (fields: FieldRequirement[], values: FormValues): FieldError => {
+const validateAll = (fields: FieldRequirement[], values: FormValues, t: TranslateFn): FieldError => {
   const errors: FieldError = {};
   for (const field of fields) {
-    const err = validateField(field, values[field.key] ?? '');
+    const err = validateField(field, values[field.key] ?? '', t);
     if (err) errors[field.key] = err;
   }
   return errors;
@@ -79,6 +82,7 @@ const validateAll = (fields: FieldRequirement[], values: FormValues): FieldError
 
 export const DepositForm = ({ fields, assetCode, onSubmit }: DepositFormProps) => {
   const formId = useId();
+  const { t } = useTranslation();
   const [values, setValues] = useState<FormValues>(() =>
     Object.fromEntries(fields.map((f) => [f.key, ''])),
   );
@@ -94,7 +98,7 @@ export const DepositForm = ({ fields, assetCode, onSubmit }: DepositFormProps) =
 
     if (touched[key]) {
       const field = fields.find((f) => f.key === key)!;
-      const err = validateField(field, value);
+      const err = validateField(field, value, t);
       setErrors((prev) => ({ ...prev, [key]: err }));
     }
   };
@@ -102,7 +106,7 @@ export const DepositForm = ({ fields, assetCode, onSubmit }: DepositFormProps) =
   const handleBlur = (key: string) => {
     setTouched((prev) => ({ ...prev, [key]: true }));
     const field = fields.find((f) => f.key === key)!;
-    const err = validateField(field, values[key] ?? '');
+    const err = validateField(field, values[key] ?? '', t);
     setErrors((prev) => ({ ...prev, [key]: err }));
   };
 
@@ -112,7 +116,7 @@ export const DepositForm = ({ fields, assetCode, onSubmit }: DepositFormProps) =
     const allTouched = Object.fromEntries(fields.map((f) => [f.key, true]));
     setTouched(allTouched);
 
-    const allErrors = validateAll(fields, values);
+    const allErrors = validateAll(fields, values, t);
     setErrors(allErrors);
 
     if (Object.keys(allErrors).length === 0) {
@@ -122,9 +126,12 @@ export const DepositForm = ({ fields, assetCode, onSubmit }: DepositFormProps) =
       const errorCount = Object.values(allErrors).length;
       setFormError({
         type: 'validation',
-        title: 'Unable to Process Deposit',
-        message: `Please fix ${errorCount} validation error${errorCount !== 1 ? 's' : ''} before continuing.`,
-        details: 'Review the highlighted fields below for specific issues.',
+        title: t('deposit.errors.title'),
+        message: t('deposit.errors.summary', {
+          count: errorCount,
+          s: errorCount !== 1 ? 's' : '',
+        }),
+        details: t('deposit.errors.details'),
         retryable: false,
       });
     }
@@ -137,7 +144,7 @@ export const DepositForm = ({ fields, assetCode, onSubmit }: DepositFormProps) =
     <form
       onSubmit={handleSubmit}
       noValidate
-      aria-label={`Deposit ${assetCode} details form`}
+      aria-label={t('deposit.formAriaLabel', { asset: assetCode })}
       className="space-y-5"
     >
       {/* Form-level error alert from submission or network failures */}
@@ -156,7 +163,10 @@ export const DepositForm = ({ fields, assetCode, onSubmit }: DepositFormProps) =
         >
           <AlertCircle size={16} className="mt-0.5 shrink-0 text-amber-400" aria-hidden="true" />
           <p className="text-sm text-amber-300">
-            Please fix {errorCount} error{errorCount !== 1 ? 's' : ''} in the form before continuing.
+            {t('deposit.errors.inlineSummary', {
+              count: errorCount,
+              s: errorCount !== 1 ? 's' : '',
+            })}
           </p>
         </div>
       )}
@@ -177,11 +187,11 @@ export const DepositForm = ({ fields, assetCode, onSubmit }: DepositFormProps) =
               {field.label}
               {field.required ? (
                 <span className="text-xs font-normal text-amber-400" aria-hidden="true">
-                  Required
+                  {t('deposit.required')}
                 </span>
               ) : (
                 <span className="text-xs font-normal text-slate-400" aria-hidden="true">
-                  Optional
+                  {t('deposit.optional')}
                 </span>
               )}
             </label>
@@ -244,7 +254,7 @@ export const DepositForm = ({ fields, assetCode, onSubmit }: DepositFormProps) =
         type="submit"
         className="btn-primary w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-text"
       >
-        Continue to Verification
+        {t('deposit.submit')}
       </button>
     </form>
   );
