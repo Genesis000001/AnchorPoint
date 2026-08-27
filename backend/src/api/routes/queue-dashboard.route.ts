@@ -8,9 +8,12 @@ import { queueConnection, QUEUE_NAMES } from '../../config/queue';
 const serverAdapter = new ExpressAdapter();
 serverAdapter.setBasePath('/api/queue-dashboard');
 
-const queues = Object.values(QUEUE_NAMES).map(
-  (name) => new BullMQAdapter(new Queue(name, { connection: queueConnection }))
+// Exposed so the app's graceful shutdown handler can drain/close these connections.
+export const dashboardQueues = Object.values(QUEUE_NAMES).map(
+  (name) => new Queue(name, { connection: queueConnection })
 );
+
+const queues = dashboardQueues.map((queue) => new BullMQAdapter(queue));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 createBullBoard({ queues: queues as any, serverAdapter });

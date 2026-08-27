@@ -81,6 +81,14 @@ export class FeeReportScheduler {
   }
 
   /**
+   * Close the underlying BullMQ queue connection. Call during graceful
+   * shutdown, after `stop()` has cancelled the cron tasks.
+   */
+  async closeQueue(): Promise<void> {
+    await feeReportService.closeQueue();
+  }
+
+  /**
    * Manually trigger a daily report job into BullMQ queue
    */
   async triggerDailyReport(date?: Date): Promise<void> {
