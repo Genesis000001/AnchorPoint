@@ -315,7 +315,6 @@ const App = () => {
 
   return (
     <ThemeContext.Provider value={{ theme, toggleTheme }}>
-    <I18nProvider>
     <NetworkProvider apiBaseUrl={apiBaseUrl}>
     <div
       className="min-h-screen flex"
@@ -523,7 +522,6 @@ const App = () => {
       </main>
     </div>
     </NetworkProvider>
-    </I18nProvider>
     </ThemeContext.Provider>
   );
 };
@@ -544,4 +542,15 @@ const ThemeToggle = () => {
   );
 };
 
-export default App;
+/**
+ * App reads the translation context itself, so the provider has to sit above
+ * it — rendering I18nProvider inside App left every `t()` call resolving to
+ * the raw key.
+ */
+const AppRoot = () => (
+  <I18nProvider>
+    <App />
+  </I18nProvider>
+);
+
+export default AppRoot;
