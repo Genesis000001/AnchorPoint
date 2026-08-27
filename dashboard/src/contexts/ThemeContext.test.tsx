@@ -1,6 +1,7 @@
 import { act, fireEvent, render, renderHook, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import SettingsView from '../components/SettingsView';
+import type { UiConfig } from '../types';
 import {
   THEME_STORAGE_KEY,
   ThemeProvider,
@@ -179,7 +180,7 @@ describe('ThemeProvider', () => {
 });
 
 describe('SettingsView theme selector', () => {
-  const uiConfig = {
+  const uiConfig: UiConfig = {
     brandName: 'AnchorPoint',
     primaryColor: '#3b82f6',
     accentColor: '#14b8a6',
@@ -190,8 +191,7 @@ describe('SettingsView theme selector', () => {
   const renderSettings = () =>
     render(
       <ThemeProvider>
-        {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-        <SettingsView uiConfig={uiConfig as any} apiBaseUrl="http://localhost:3002" />
+        <SettingsView uiConfig={uiConfig} apiBaseUrl="http://localhost:3002" />
       </ThemeProvider>,
     );
 
