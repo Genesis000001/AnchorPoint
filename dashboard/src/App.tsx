@@ -25,7 +25,8 @@ import { StatusBanner } from './components/StatusBanner';
 import { UserAvatarDropdown } from './components/UserAvatarDropdown';
 import { CopyablePublicKey } from './components/CopyablePublicKey';
 import { WalletModal } from './components/WalletModal';
-import { NetworkSelector } from './components/NetworkSelector';
+import { NetworkSelector, NetworkBanner } from './components/NetworkSelector';
+import { NetworkProvider } from './contexts/NetworkContext';
 import { SessionTimeoutModal } from './components/Auth/SessionTimeoutModal';
 import { FreighterAdapter } from './lib/wallet/FreighterAdapter';
 import { I18nProvider, useTranslation } from './i18n/config';
@@ -315,6 +316,7 @@ const App = () => {
   return (
     <ThemeContext.Provider value={{ theme, toggleTheme }}>
     <I18nProvider>
+    <NetworkProvider apiBaseUrl={apiBaseUrl}>
     <div
       className="min-h-screen flex"
       style={
@@ -426,7 +428,7 @@ const App = () => {
                 <option value="es">{t('language.es')}</option>
                 <option value="pt">{t('language.pt')}</option>
               </select>
-              <NetworkSelector apiBaseUrl={apiBaseUrl} />
+              <NetworkSelector />
               <UserAvatarDropdown
                 onSettings={() => setActiveTab('settings')}
                 onNotifications={() => setActiveTab('notifications')}
@@ -436,6 +438,8 @@ const App = () => {
               />
           </div>
         </header>
+
+        <NetworkBanner />
 
         <section
           className="mx-auto w-full max-w-7xl px-3 py-5 sm:px-6 sm:py-8 lg:px-8"
@@ -518,6 +522,8 @@ const App = () => {
         </section>
       </main>
     </div>
+    </NetworkProvider>
+    </I18nProvider>
     </ThemeContext.Provider>
   );
 };
@@ -535,7 +541,6 @@ const ThemeToggle = () => {
       {theme === 'dark' ? <Sun size={16} aria-hidden="true" /> : <Moon size={16} aria-hidden="true" />}
       <span className="hidden sm:inline">{theme === 'dark' ? 'Light' : 'Dark'}</span>
     </button>
-    </I18nProvider>
   );
 };
 
