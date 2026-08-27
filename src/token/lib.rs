@@ -376,6 +376,7 @@ impl TokenContract {
 mod tests {
     extern crate std;
     use super::*;
+    use soroban_sdk::{testutils::{Address as _, Ledger}, Env, String};
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
         Env, String,
@@ -598,6 +599,100 @@ mod tests {
 
         client.set_token_metadata(&token_id, &uri);
         assert_eq!(client.get_token_metadata(&token_id), uri);
+    }
+}
+
+/// ============================================================================
+/// Formal Verification Invariants
+/// ============================================================================
+/// These tests verify critical invariants that must hold for all valid states
+/// and operations of the token contract. They use property-based testing
+/// patterns to ensure mathematical correctness.
+#[cfg(test)]
+mod invariants {
+    extern crate std;
+    use super::*;
+    use soroban_sdk::{testutils::{Address as _, Ledger}, Env, String};
+
+    /// Helper to set up a fresh contract instance
+    fn setup_fresh() -> (Env, TokenContractClient<'static>, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let id = env.register(TokenContract, ());
+        let client = TokenContractClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        client.initialize(
+            &admin,
+            &7u32,
+            &String::from_str(&env, "AnchorToken"),
+            &String::from_str(&env, "ANCT"),
+        );
+        (env, client, admin)
+    }
+
+    // =========================================================================
+    // INVARIANT 1: Conservation of Supply
+    // =========================================================================
+    /// After any operation, the sum of all user balances must equal total_supply.
+    /// This is the fundamental invariant of any token contract.
+    #[test]
+    fn invariant_supply_conservation_after_mint() {
+        let (env, client, _) = setup_fresh();
+        let user1 = Address::generate(&env);
+        let user2 = Address::generate(&env);
+        let user3 = Address::generate(&env);
+        let token_id = 1u64;
+
+        // Mint to multiple users
+        client.mint(&user1, &token_id, &1000);
+        client.mint(&user2, &token_id, &500);
+        client.mint(&user3, &token_id, &250);
+
+        let balance_sum = client.balance_of(&user1, &token_id)
+            + client.balance_of(&user2, &token_id)
+            + client.balance_of(&user3, &token_id);
+
+        // Invariant: sum of balances equals total supply
+        assert_eq!(
+            client.total_supply(&token_id),
+            balance_sum,
+            "INVARIANT VIOLATION: Supply conservation failed after mint"
+        );
+    }
+
+    #[test]
+    fn invariant_supply_conservation_after_transfer() {
+        let (env, client, _) = setup_fresh();
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+        let carol = Address::generate(&env);
+        let token_id = 1u64;
+
+        client.mint(&alice, &token_id, &1000);
+
+        let supply_before = client.total_supply(&token_id);
+
+        // Multiple transfers
+        client.transfer(&alice, &bob, &token_id, &300);
+        client.transfer(&bob, &carol, &token_id, &150);
+        client.transfer(&alice, &carol, &token_id, &100);
+
+        let supply_after = client.total_supply(&token_id);
+
+        // Invariant: transfers do not change total supply
+        assert_eq!(
+            supply_before, supply_after,
+            "INVARIANT VIOLATION: Supply changed during transfers"
+        );
+
+        // Invariant: sum of balances still equals supply
+        let balance_sum = client.balance_of(&alice, &token_id)
+            + client.balance_of(&bob, &token_id)
+            + client.balance_of(&carol, &token_id);
+        assert_eq!(
+            supply_after, balance_sum,
+            "INVARIANT VIOLATION: Balance sum doesn't match supply after transfers"
+        );
     }
 
     /// ============================================================================

@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-#import { randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import {
   createWithdrawInteractiveUrl,
   createDepositInteractiveUrl,
@@ -367,6 +367,7 @@ router.get('/transaction', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Stellar transaction hash is missing or invalid' });
     }
 
+    const stored = await Sep24Service.getCallback(transaction.id);
     const validHash: string = stellarTxHash;
 
     const startedAt = toEpochSeconds(transaction.startedAt);
@@ -381,12 +382,122 @@ router.get('/transaction', async (req: Request, res: Response) => {
         started_at: startedAt ?? 0,
         ...(completedAt !== null ? { completed_at: completedAt } : {}),
         stellar_transaction_id: validHash,
-        external_transaction_id: transaction.externalId,
+        external_transaction_id: transaction.externalId ?? undefined,
+        claimable_balance_id: stored?.claimableBalanceId ?? (transaction as any).claimableBalanceId ?? undefined,
       },
     });
   } catch (error) {
     return res.status(500).json({ error: 'Failed to fetch transaction' });
   }
+});
+
+/**
+ * @swagger
+ * /sep24/transactions/{id}/status:
+ *   patch:
+ *     summary: Update SEP-24 transaction status and notify partner webhook
+ *     description: >
+ *       Updates deposit/withdrawal status and emits an idempotent partner webhook
+ *       (Idempotency-Key header, Redis delivery-hash dedupe, retry queue).
+ *     tags: [SEP-24]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [status]
+ *             properties:
+ *               status:
+ *                 type: string
+ *               previous_status:
+ *                 type: string
+ *               claimable_balance_id:
+ *                 type: string
+ *                 description: Stellar claimable balance ID for deposit redemptions
+ *               callback:
+ *                 type: string
+ *                 description: Optional override callback URL when not stored at interactive start
+ *     responses:
+ *       200:
+ *         description: Status updated and webhook handled
+ *       400:
+ *         description: Invalid request
+ *       404:
+ *         description: Transaction / callback not found
+ */
+router.patch('/transactions/:id/status', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { status, previous_status, callback: callbackOverride, claimable_balance_id } = req.body as {
+    status?: string;
+    previous_status?: string;
+    callback?: string;
+    claimable_balance_id?: string;
+  };
+
+  if (!status || typeof status !== 'string') {
+    return res.status(400).json({ error: 'status is required' });
+  }
+
+  const stored = await Sep24Service.getCallback(id);
+  const callbackUrl = (typeof callbackOverride === 'string' && isValidCallbackUrl(callbackOverride)
+    ? callbackOverride
+    : stored?.callbackUrl) ?? null;
+
+  if (!callbackUrl) {
+    return res.status(404).json({
+      error: 'No partner callback configured for this transaction',
+    });
+  }
+
+  if (claimable_balance_id && stored) {
+    stored.claimableBalanceId = claimable_balance_id;
+    await Sep24Service.storeCallback(id, stored);
+  }
+
+  const effectiveClaimableBalanceId = claimable_balance_id || stored?.claimableBalanceId;
+  const previousStatus = previous_status ?? 'pending_user';
+  const kind = stored?.kind ?? 'deposit';
+
+  let updatedTransaction = null;
+  try {
+    updatedTransaction = await prisma.transaction.update({
+      where: { id },
+      data: { status: status.toUpperCase() },
+    });
+  } catch {
+    // Transaction may not exist yet (interactive-only flow); still notify partner.
+  }
+
+  const isClaimableEvent = status.toLowerCase() === 'pending_external' || !!effectiveClaimableBalanceId;
+
+  const webhookDelivery = await Sep24Service.notifyStatusChange({
+    transactionId: id,
+    kind,
+    previousStatus,
+    nextStatus: status,
+    callbackUrl,
+    claimableBalanceId: effectiveClaimableBalanceId,
+    event: isClaimableEvent ? 'sep24.transaction.claimable' : 'sep24.transaction.status_changed',
+    amount: stored?.amount ?? updatedTransaction?.amount,
+    assetCode: stored?.assetCode ?? updatedTransaction?.assetCode,
+    stellarTransactionId: updatedTransaction?.stellarTxId ?? undefined,
+    externalTransactionId: updatedTransaction?.externalId ?? undefined,
+  });
+
+  return res.json({
+    id,
+    status,
+    previous_status: previousStatus,
+    claimable_balance_id: effectiveClaimableBalanceId,
+    webhook: webhookDelivery,
+  });
 });
 
 export default router;

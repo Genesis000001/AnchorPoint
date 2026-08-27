@@ -219,6 +219,187 @@ export class MultisigController {
       });
     }
   }
+
+  /**
+   * Create an administrative action proposal
+   */
+  async createAdminProposal(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const { actionType, description, payload, requiredSigners, threshold } = req.body;
+      const creatorPublicKey = req.user?.publicKey || 'ADMIN_KEY';
+
+      const proposal = await multisigService.createAdminProposal({
+        actionType,
+        description,
+        payload,
+        creatorPublicKey,
+        requiredSigners,
+        threshold,
+      });
+
+      res.status(201).json({
+        status: 'success',
+        data: { proposal },
+      });
+    } catch (error: any) {
+      logger.error('Error creating admin proposal:', error);
+      res.status(400).json({
+        status: 'error',
+        message: error.message || 'Failed to create admin proposal',
+      });
+    }
+  }
+
+  /**
+   * Approve/sign an administrative action proposal
+   */
+  async approveAdminProposal(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const { proposalId } = req.params;
+      const { signature, signerPublicKey: bodySignerPublicKey } = req.body;
+      const signerPublicKey = req.user?.publicKey || bodySignerPublicKey;
+
+      if (!signature) {
+        res.status(400).json({
+          status: 'error',
+          message: 'Cryptographic signature is required to approve admin proposal',
+        });
+        return;
+      }
+
+      if (!signerPublicKey) {
+        res.status(400).json({
+          status: 'error',
+          message: 'Signer public key is required',
+        });
+        return;
+      }
+
+      const proposal = await multisigService.approveAdminProposal(
+        proposalId,
+        signerPublicKey,
+        signature
+      );
+
+      res.json({
+        status: 'success',
+        data: { proposal },
+      });
+    } catch (error: any) {
+      logger.error('Error approving admin proposal:', error);
+      res.status(400).json({
+        status: 'error',
+        message: error.message || 'Failed to approve admin proposal',
+      });
+    }
+  }
+
+  /**
+   * Reject an administrative action proposal
+   */
+  async rejectAdminProposal(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const { proposalId } = req.params;
+      const { reason, signerPublicKey: bodySignerPublicKey } = req.body;
+      const signerPublicKey = req.user?.publicKey || bodySignerPublicKey || 'ADMIN_KEY';
+
+      const proposal = await multisigService.rejectAdminProposal(
+        proposalId,
+        signerPublicKey,
+        reason
+      );
+
+      res.json({
+        status: 'success',
+        data: { proposal },
+      });
+    } catch (error: any) {
+      logger.error('Error rejecting admin proposal:', error);
+      res.status(400).json({
+        status: 'error',
+        message: error.message || 'Failed to reject admin proposal',
+      });
+    }
+  }
+
+  /**
+   * Execute an approved administrative action proposal
+   */
+  async executeAdminProposal(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const { proposalId } = req.params;
+      const executorPublicKey = req.user?.publicKey || 'ADMIN_KEY';
+
+      const result = await multisigService.executeAdminProposal(
+        proposalId,
+        executorPublicKey
+      );
+
+      res.json({
+        status: 'success',
+        data: result,
+      });
+    } catch (error: any) {
+      logger.error('Error executing admin proposal:', error);
+      res.status(400).json({
+        status: 'error',
+        message: error.message || 'Failed to execute admin proposal',
+      });
+    }
+  }
+
+  /**
+   * Get all administrative action proposals
+   */
+  async getAdminProposals(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const { status } = req.query;
+      const proposals = await multisigService.getAdminProposals(
+        status as any
+      );
+
+      res.json({
+        status: 'success',
+        data: { proposals },
+      });
+    } catch (error: any) {
+      logger.error('Error fetching admin proposals:', error);
+      res.status(500).json({
+        status: 'error',
+        message: 'Failed to fetch admin proposals',
+      });
+    }
+  }
+
+  /**
+   * Get admin proposal by ID
+   */
+  async getAdminProposalById(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const { proposalId } = req.params;
+      const proposal = await multisigService.getAdminProposal(proposalId);
+
+      if (!proposal) {
+        res.status(404).json({
+          status: 'error',
+          message: 'Admin proposal not found',
+        });
+        return;
+      }
+
+      res.json({
+        status: 'success',
+        data: { proposal },
+      });
+    } catch (error: any) {
+      logger.error('Error fetching admin proposal:', error);
+      res.status(500).json({
+        status: 'error',
+        message: 'Failed to fetch admin proposal',
+      });
+    }
+  }
 }
 
 export default new MultisigController();
+

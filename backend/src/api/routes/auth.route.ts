@@ -105,6 +105,30 @@ router.post('/', async (req: Request, res: Response) => {
 
 /**
  * @swagger
+ * /auth:
+ *   get:
+ *     summary: SEP-10 Challenge Endpoint (GET)
+ *     description: Generates a SEP-10 challenge transaction. Account is supplied as a query parameter.
+ *     tags: [Auth]
+ *     parameters:
+ *       - in: query
+ *         name: account
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Stellar account public key
+ *     responses:
+ *       200:
+ *         description: Challenge transaction generated
+ *       400:
+ *         description: Invalid request parameters
+ */
+router.get('/', async (req: Request, res: Response) => {
+  return getChallenge(req, res, redisService);
+});
+
+/**
+ * @swagger
  * /auth/token:
  *   post:
  *     summary: SEP-10 Token Endpoint

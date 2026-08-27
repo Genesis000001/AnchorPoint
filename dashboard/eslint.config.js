@@ -8,6 +8,8 @@ const browserGlobals = {
   setInterval: 'readonly',
   clearInterval: 'readonly',
   setTimeout: 'readonly',
+  clearTimeout: 'readonly',
+  EventSource: 'readonly',
   window: 'readonly',
 };
 

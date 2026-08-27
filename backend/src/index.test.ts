@@ -107,4 +107,17 @@ describe('Backend API', () => {
       expect(routerLayers).toHaveLength(1);
     }
   });
+
+  it('should mount SEP-1 stellar.toml and SEP-10 /auth challenge routes', () => {
+    const stack = (app as any)._router?.stack ?? [];
+    const hasToml = stack.some((layer: any) => (
+      layer?.regexp instanceof RegExp && layer.regexp.test('/.well-known/stellar.toml')
+    ));
+    const hasAuth = stack.some((layer: any) => (
+      layer?.regexp instanceof RegExp && layer.regexp.test('/auth')
+    ));
+
+    expect(hasToml).toBe(true);
+    expect(hasAuth).toBe(true);
+  });
 });

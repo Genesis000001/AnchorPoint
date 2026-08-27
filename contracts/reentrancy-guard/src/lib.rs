@@ -37,7 +37,7 @@
 
 #![no_std]
 
-use soroban_sdk::{contracttype, Env, Symbol};
+use soroban_sdk::{contracttype, Env, Symbol, symbol_short};
 
 /// Storage key for the reentrancy guard state
 const REENTRANCY_KEY: Symbol = symbol_short!("REENTRY");

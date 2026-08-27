@@ -33,6 +33,8 @@ export interface KycWebhookRecord {
   provider?: string | null;
   providerRef?: string | null;
   status: string;
+  rejectionReasons?: string[] | string | null;
+  rejectionReasonCodes?: string[] | null;
   createdAt: Date;
   updatedAt: Date;
   user?: {
@@ -59,8 +61,8 @@ export interface TransactionStatusChangedPayload {
   };
 }
 
-export interface KycStatusChangedPayload {
-  event: 'kyc.status_changed';
+export interface CustomerKycStatusUpdatedPayload {
+  event: 'customer.kyc_status_updated';
   occurredAt: string;
   previousStatus: string;
   customer: {
@@ -70,12 +72,16 @@ export interface KycStatusChangedPayload {
     provider?: string;
     providerRef?: string;
     status: string;
+    rejectionReasons?: string[];
+    rejectionReasonCodes?: string[];
     createdAt: string;
     updatedAt: string;
   };
 }
 
-type WebhookPayload = TransactionStatusChangedPayload | KycStatusChangedPayload;
+export type KycStatusChangedPayload = CustomerKycStatusUpdatedPayload;
+
+type WebhookPayload = TransactionStatusChangedPayload | CustomerKycStatusUpdatedPayload;
 
 export interface WebhookConfig {
   url?: string;
@@ -187,24 +193,48 @@ export const buildTransactionStatusChangedPayload = (
   },
 });
 
-export const buildKycStatusChangedPayload = (
+export const buildCustomerKycStatusUpdatedPayload = (
   customer: KycWebhookRecord,
-  previousStatus: string
-): KycStatusChangedPayload => ({
-  event: 'kyc.status_changed',
-  occurredAt: new Date().toISOString(),
-  previousStatus,
-  customer: {
-    id: customer.id,
-    userId: customer.userId,
-    ...(customer.user?.publicKey ? { account: customer.user.publicKey } : {}),
-    ...(customer.provider ? { provider: customer.provider } : {}),
-    ...(customer.providerRef ? { providerRef: customer.providerRef } : {}),
-    status: customer.status,
-    createdAt: customer.createdAt.toISOString(),
-    updatedAt: customer.updatedAt.toISOString(),
-  },
-});
+  previousStatus: string,
+  rejectionReasons?: string[] | string
+): CustomerKycStatusUpdatedPayload => {
+  let reasons: string[] | undefined;
+  if (rejectionReasons) {
+    reasons = Array.isArray(rejectionReasons) ? rejectionReasons : [rejectionReasons];
+  } else if (customer.rejectionReasonCodes && customer.rejectionReasonCodes.length > 0) {
+    reasons = customer.rejectionReasonCodes;
+  } else if (customer.rejectionReasons) {
+    reasons = Array.isArray(customer.rejectionReasons)
+      ? customer.rejectionReasons
+      : [customer.rejectionReasons];
+  }
+
+  const isRejected = customer.status.toUpperCase() === 'REJECTED';
+
+  return {
+    event: 'customer.kyc_status_updated',
+    occurredAt: new Date().toISOString(),
+    previousStatus,
+    customer: {
+      id: customer.id,
+      userId: customer.userId,
+      ...(customer.user?.publicKey ? { account: customer.user.publicKey } : {}),
+      ...(customer.provider ? { provider: customer.provider } : {}),
+      ...(customer.providerRef ? { providerRef: customer.providerRef } : {}),
+      status: customer.status,
+      ...(isRejected && reasons && reasons.length > 0
+        ? {
+            rejectionReasons: reasons,
+            rejectionReasonCodes: reasons,
+          }
+        : {}),
+      createdAt: customer.createdAt.toISOString(),
+      updatedAt: customer.updatedAt.toISOString(),
+    },
+  };
+};
+
+export const buildKycStatusChangedPayload = buildCustomerKycStatusUpdatedPayload;
 
 export const signWebhookPayload = (payload: string, secret: string, timestamp: string): string => {
   const digest = createHmac('sha256', secret)
@@ -313,7 +343,8 @@ export class WebhookService {
 
   async sendKycStatusChanged(
     customer: KycWebhookRecord,
-    previousStatus: string
+    previousStatus: string,
+    rejectionReasons?: string[] | string
   ): Promise<WebhookDeliveryResult> {
     if (customer.status === previousStatus) {
       return {
@@ -334,7 +365,7 @@ export class WebhookService {
       };
     }
 
-    const payload = buildKycStatusChangedPayload(customer, previousStatus);
+    const payload = buildCustomerKycStatusUpdatedPayload(customer, previousStatus, rejectionReasons);
     const idempotencyKey = buildIdempotencyKey({
       protocol: 'sep12',
       transactionId: customer.id,
@@ -342,6 +373,14 @@ export class WebhookService {
       nextStatus: customer.status,
     });
     return this.deliver(payload, customer.id, idempotencyKey);
+  }
+
+  async sendCustomerKycStatusUpdated(
+    customer: KycWebhookRecord,
+    previousStatus: string,
+    rejectionReasons?: string[] | string
+  ): Promise<WebhookDeliveryResult> {
+    return this.sendKycStatusChanged(customer, previousStatus, rejectionReasons);
   }
 
   private async deliver(

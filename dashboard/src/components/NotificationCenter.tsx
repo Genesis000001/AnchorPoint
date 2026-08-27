@@ -17,6 +17,19 @@ interface NotificationCenterProps {
   onOpenPreferences?: () => void;
 }
 
+const INITIAL_BACKOFF_MS = 1000;
+const MAX_BACKOFF_MS = 30000;
+
+export const STREAM_PATH = '/api/notifications/stream';
+
+function isNotification(value: unknown): value is Notification {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const candidate = value as Partial<Notification>;
+  return typeof candidate.id === 'string' && typeof candidate.message === 'string';
+}
+
 export const NotificationCenter: React.FC<NotificationCenterProps> = ({
   apiBaseUrl = 'http://localhost:3002',
   onOpenPreferences,
@@ -26,10 +39,89 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<'all' | 'PENDING' | 'SENT' | 'FAILED'>('all');
   const [refreshing, setRefreshing] = useState(false);
+  const [streamStatus, setStreamStatus] = useState<'idle' | 'connected' | 'reconnecting'>('idle');
 
   useEffect(() => {
     fetchNotifications();
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let eventSource: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let backoffMs = INITIAL_BACKOFF_MS;
+
+    const clearTimer = () => {
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+    };
+
+    const connect = () => {
+      if (cancelled) {
+        return;
+      }
+
+      eventSource?.close();
+      const base = apiBaseUrl.replace(/\/$/, '');
+      eventSource = new EventSource(`${base}${STREAM_PATH}`);
+
+      eventSource.onopen = () => {
+        if (cancelled) {
+          return;
+        }
+        backoffMs = INITIAL_BACKOFF_MS;
+        setStreamStatus('connected');
+      };
+
+      eventSource.onmessage = (event) => {
+        if (cancelled) {
+          return;
+        }
+        try {
+          const payload = JSON.parse(event.data) as unknown;
+          const candidate =
+            payload && typeof payload === 'object' && 'data' in payload
+              ? (payload as { data: unknown }).data
+              : payload;
+          if (!isNotification(candidate)) {
+            return;
+          }
+          setNotifications((prev) => {
+            if (prev.some((item) => item.id === candidate.id)) {
+              return prev;
+            }
+            return [candidate, ...prev];
+          });
+        } catch {
+          // Ignore keep-alive comments and malformed frames.
+        }
+      };
+
+      eventSource.onerror = () => {
+        if (cancelled) {
+          return;
+        }
+        eventSource?.close();
+        eventSource = null;
+        setStreamStatus('reconnecting');
+        clearTimer();
+        const delay = backoffMs;
+        backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
+        reconnectTimer = setTimeout(connect, delay);
+      };
+    };
+
+    connect();
+
+    return () => {
+      cancelled = true;
+      clearTimer();
+      eventSource?.close();
+      eventSource = null;
+    };
+  }, [apiBaseUrl]);
 
   const fetchNotifications = async (showRefreshing = false) => {
     if (showRefreshing) {
@@ -53,7 +145,12 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
       }
 
       const data = await response.json();
-      setNotifications(data.data || []);
+      const incoming: Notification[] = data.data || [];
+      setNotifications((prev) => {
+        const seen = new Set(incoming.map((item) => item.id));
+        const liveOnly = prev.filter((item) => !seen.has(item.id));
+        return [...liveOnly, ...incoming];
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
       console.error('Error fetching notifications:', err);
@@ -124,6 +221,11 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
 
   return (
     <div className="space-y-6">
+      {streamStatus === 'reconnecting' && (
+        <p role="status" className="text-xs text-slate-400">
+          Reconnecting event stream...
+        </p>
+      )}
       {/* Stats Cards */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div className="glass-card p-4">

@@ -49,4 +49,51 @@ describe('Sep24Service', () => {
       expect(Sep24Service.toUnixTimestamp(null)).toBe(0);
     });
   });
+
+  describe('notifyClaimableBalance', () => {
+    it('stores claimable balance ID and dispatches webhook', async () => {
+      const mockRedisService = {
+        getJSON: jest.fn().mockResolvedValue({
+          callbackUrl: 'https://client.com/webhook',
+          kind: 'deposit',
+          assetCode: 'USDC',
+          amount: '50.00',
+        }),
+        setJSON: jest.fn().mockResolvedValue(undefined),
+      };
+
+      const result = await Sep24Service.notifyClaimableBalance(
+        'tx-test-123',
+        '00000000claimable123',
+        undefined,
+        mockRedisService as any
+      );
+
+      expect(mockRedisService.setJSON).toHaveBeenCalledWith(
+        'sep24:callback:tx-test-123',
+        expect.objectContaining({
+          claimableBalanceId: '00000000claimable123',
+        }),
+        86400
+      );
+      expect(result).toBeDefined();
+    });
+
+    it('returns skipped when no callback URL is available', async () => {
+      const mockRedisService = {
+        getJSON: jest.fn().mockResolvedValue(null),
+        setJSON: jest.fn().mockResolvedValue(undefined),
+      };
+
+      const result = await Sep24Service.notifyClaimableBalance(
+        'tx-test-no-cb',
+        'claimable-id',
+        undefined,
+        mockRedisService as any
+      );
+
+      expect(result.delivered).toBe(false);
+      expect(result.skipped).toBe(true);
+    });
+  });
 });

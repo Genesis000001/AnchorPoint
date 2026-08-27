@@ -43,6 +43,7 @@ export interface Sep24StoredCallback {
   assetCode?: string;
   amount?: string;
   account?: string;
+  claimableBalanceId?: string;
 }
 
 export class Sep24Service {
@@ -107,4 +108,47 @@ export class Sep24Service {
   ): Promise<Sep24CallbackDeliveryResult> {
     return notifySep24StatusChange(toSep24CallbackInputWithUnixTimestamps(input));
   }
+
+  /**
+   * Notifies the partner callback for a SEP-24 deposit using a claimable balance
+   * with the claimable_balance_id required for redemption.
+   */
+  public static async notifyClaimableBalance(
+    transactionId: string,
+    claimableBalanceId: string,
+    callbackUrlOverride?: string,
+    redisService: RedisService = new RedisService(redis as any)
+  ): Promise<Sep24CallbackDeliveryResult> {
+    const stored = await this.getCallback(transactionId, redisService);
+    const callbackUrl = callbackUrlOverride || stored?.callbackUrl;
+
+    if (stored) {
+      stored.claimableBalanceId = claimableBalanceId;
+      await this.storeCallback(transactionId, stored, redisService);
+    }
+
+    if (!callbackUrl) {
+      return {
+        delivered: false,
+        skipped: true,
+        attempts: 0,
+        idempotencyKey: `sep24:${transactionId}:claimable`,
+        error: 'No callback URL configured',
+      };
+    }
+
+    return notifySep24StatusChange({
+      transactionId,
+      kind: stored?.kind ?? 'deposit',
+      previousStatus: 'pending_anchor',
+      nextStatus: 'pending_external',
+      callbackUrl,
+      claimableBalanceId,
+      amount: stored?.amount,
+      assetCode: stored?.assetCode,
+      event: 'sep24.transaction.claimable',
+    });
+  }
 }
+
+

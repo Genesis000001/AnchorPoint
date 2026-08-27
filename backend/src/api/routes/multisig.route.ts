@@ -32,6 +32,29 @@ const queryUnreadSchema = z.object({
   unreadOnly: z.enum(['true', 'false']).optional(),
 });
 
+const createAdminProposalSchema = z.object({
+  actionType: z.string().min(1, 'actionType is required'),
+  description: z.string().min(1, 'description is required'),
+  payload: z.record(z.string(), z.any()),
+  requiredSigners: z.array(z.string()).min(1, 'At least one required signer is required'),
+  threshold: z.number().int().min(1).optional(),
+});
+
+const approveAdminProposalSchema = z.object({
+  signature: z.string().min(1, 'Cryptographic signature is required'),
+  signerPublicKey: z.string().optional(),
+});
+
+const rejectAdminProposalSchema = z.object({
+  reason: z.string().optional(),
+  signerPublicKey: z.string().optional(),
+});
+
+const queryProposalStatusSchema = z.object({
+  status: z.enum(['PROPOSED', 'APPROVED', 'EXECUTED', 'REJECTED']).optional(),
+});
+
+
 /**
  * @swagger
  * components:
@@ -478,4 +501,212 @@ router.post(
   multisigController.markNotificationsAsRead.bind(multisigController)
 );
 
+/**
+ * @swagger
+ * /api/multisig/proposals:
+ *   post:
+ *     summary: Propose an administrative action requiring multi-signature approval
+ *     description: Creates a new administrative action proposal requiring co-signer cryptographic approval
+ *     tags: [Multisig]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - actionType
+ *               - description
+ *               - payload
+ *               - requiredSigners
+ *             properties:
+ *               actionType:
+ *                 type: string
+ *                 example: CONFIG_UPDATE
+ *               description:
+ *                 type: string
+ *                 example: Update surge multiplier threshold
+ *               payload:
+ *                 type: object
+ *                 example: { "RELAYER_FEE_SURGE_MULTIPLIER": 1.5 }
+ *               requiredSigners:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *               threshold:
+ *                 type: integer
+ *                 default: 2
+ *     responses:
+ *       201:
+ *         description: Proposal created successfully
+ *       400:
+ *         description: Invalid proposal payload
+ */
+router.post(
+  '/proposals',
+  authMiddleware,
+  validate({ body: createAdminProposalSchema }),
+  multisigController.createAdminProposal.bind(multisigController)
+);
+
+/**
+ * @swagger
+ * /api/multisig/proposals:
+ *   get:
+ *     summary: List administrative action proposals
+ *     description: Returns administrative proposals optionally filtered by status (PROPOSED, APPROVED, EXECUTED, REJECTED)
+ *     tags: [Multisig]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *           enum: [PROPOSED, APPROVED, EXECUTED, REJECTED]
+ *     responses:
+ *       200:
+ *         description: Proposals list
+ */
+router.get(
+  '/proposals',
+  authMiddleware,
+  validate({ query: queryProposalStatusSchema }),
+  multisigController.getAdminProposals.bind(multisigController)
+);
+
+/**
+ * @swagger
+ * /api/multisig/proposals/{proposalId}:
+ *   get:
+ *     summary: Get administrative action proposal by ID
+ *     tags: [Multisig]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: proposalId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Proposal details
+ *       404:
+ *         description: Proposal not found
+ */
+router.get(
+  '/proposals/:proposalId',
+  authMiddleware,
+  multisigController.getAdminProposalById.bind(multisigController)
+);
+
+/**
+ * @swagger
+ * /api/multisig/proposals/{proposalId}/approve:
+ *   post:
+ *     summary: Approve an administrative action proposal with cryptographic signature
+ *     description: Submits co-signer signature over the proposal canonical digest
+ *     tags: [Multisig]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: proposalId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - signature
+ *             properties:
+ *               signature:
+ *                 type: string
+ *                 description: Base64 cryptographic Ed25519 signature
+ *               signerPublicKey:
+ *                 type: string
+ *                 description: Signer public key (optional if in JWT auth)
+ *     responses:
+ *       200:
+ *         description: Proposal approved / signature recorded
+ *       400:
+ *         description: Invalid signature or unauthorized signer
+ */
+router.post(
+  '/proposals/:proposalId/approve',
+  authMiddleware,
+  validate({ body: approveAdminProposalSchema }),
+  multisigController.approveAdminProposal.bind(multisigController)
+);
+
+/**
+ * @swagger
+ * /api/multisig/proposals/{proposalId}/reject:
+ *   post:
+ *     summary: Reject an administrative action proposal
+ *     tags: [Multisig]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: proposalId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               reason:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Proposal rejected
+ *       400:
+ *         description: Cannot reject proposal
+ */
+router.post(
+  '/proposals/:proposalId/reject',
+  authMiddleware,
+  validate({ body: rejectAdminProposalSchema }),
+  multisigController.rejectAdminProposal.bind(multisigController)
+);
+
+/**
+ * @swagger
+ * /api/multisig/proposals/{proposalId}/execute:
+ *   post:
+ *     summary: Execute an approved administrative action proposal
+ *     description: Executes the proposal once the signature threshold is met
+ *     tags: [Multisig]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: proposalId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Action executed successfully
+ *       400:
+ *         description: Threshold not met or execution failed
+ */
+router.post(
+  '/proposals/:proposalId/execute',
+  authMiddleware,
+  multisigController.executeAdminProposal.bind(multisigController)
+);
+
 export default router;
+

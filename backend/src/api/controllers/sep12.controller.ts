@@ -175,15 +175,38 @@ export class Sep12Controller {
       try {
         const providerRes = await kycProvider.submitCustomer(customerData, documents);
         providerStatus = providerRes.status;
+        const nextDbStatus = this.toDbStatus(providerRes.status);
 
-        await prisma.kycCustomer.update({
+        const updatedKyc = await prisma.kycCustomer.update({
           where: { id: kycCustomer.id },
           data: {
             provider: kycProvider.providerName,
             providerRef: providerRes.providerRef,
-            status: this.toDbStatus(providerRes.status),
+            status: nextDbStatus,
+          },
+          include: {
+            user: {
+              select: {
+                publicKey: true,
+              },
+            },
           },
         });
+
+        if (nextDbStatus !== KYCStatus.PENDING) {
+          const rejectionReasons =
+            (providerRes as any).rejectionReasons ??
+            (nextDbStatus === KYCStatus.REJECTED ? ['RISK_POLICY_VIOLATION'] : undefined);
+
+          defaultWebhookService
+            .sendKycStatusChanged(updatedKyc as any, KYCStatus.PENDING, rejectionReasons)
+            .catch((error) => {
+              logger.error('SEP-12 customer PUT status updated but webhook delivery failed', {
+                customerId: updatedKyc.id,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            });
+        }
       } catch (providerError) {
         logger.error('SEP-12 customer provider submission failed', {
           error: providerError instanceof Error ? providerError.message : 'Unknown error',
@@ -340,7 +363,14 @@ export class Sep12Controller {
         },
       });
 
-      defaultWebhookService.sendKycStatusChanged(updatedCustomer, previousStatus).catch((error) => {
+      const rejectionReasons =
+        (event as any).rejectionReasons ??
+        (req.body as any).rejection_reasons ??
+        (req.body as any).rejection_reason_codes ??
+        (req.body as any).reasons ??
+        (nextStatus === KYCStatus.REJECTED ? ['VERIFICATION_FAILED'] : undefined);
+
+      defaultWebhookService.sendKycStatusChanged(updatedCustomer as any, previousStatus, rejectionReasons).catch((error) => {
         logger.error('SEP-12 KYC status updated but webhook delivery failed', {
           customerId: updatedCustomer.id,
           error: error instanceof Error ? error.message : String(error),

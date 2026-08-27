@@ -114,7 +114,9 @@ function buildStellarInfo(): StellarInfo {
 export const getInfo = async (req: Request, res: Response): Promise<Response> => {
   const format = req.query.format as string;
   const acceptHeader = req.headers.accept || '';
-  const isToml = format === 'toml' || acceptHeader.includes('text/toml') || acceptHeader.includes('application/toml');
+  const requestPath = `${req.path || ''} ${req.originalUrl || ''} ${req.url || ''}`;
+  const isTomlPath = requestPath.includes('stellar.toml');
+  const isToml = isTomlPath || format === 'toml' || acceptHeader.includes('text/toml') || acceptHeader.includes('application/toml');
 
   let stellarInfo: StellarInfo;
   try {

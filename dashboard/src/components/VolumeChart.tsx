@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { ChartSkeleton } from './Skeletons';
 
 type DataPoint = { label: string; deposits: number; withdrawals: number };
 type Period = '7D' | '1M' | '3M';
@@ -53,9 +54,18 @@ function formatValue(v: number): string {
 
 type TooltipState = { index: number; point: DataPoint } | null;
 
-export const VolumeChart = () => {
+interface VolumeChartProps {
+  /** Renders the placeholder instead of the plot while the fetch is in flight. */
+  isLoading?: boolean;
+}
+
+export const VolumeChart = ({ isLoading = false }: VolumeChartProps = {}) => {
   const [period, setPeriod] = useState<Period>('7D');
   const [hovered, setHovered] = useState<TooltipState>(null);
+
+  if (isLoading) {
+    return <ChartSkeleton legend bars={[55, 80, 40, 70, 60, 35, 50]} label="Loading transaction volume chart" />;
+  }
 
   const data = CHART_DATA[period];
   const maxVal = Math.max(...data.flatMap((d) => [d.deposits, d.withdrawals]));
@@ -148,7 +158,8 @@ export const VolumeChart = () => {
       <div className="relative flex-1 min-h-0">
         <svg
           viewBox={`0 0 ${VW} ${VH}`}
-          className="w-full h-full"
+          className="w-full h-full animate-fade-in"
+          data-testid="volume-chart-plot"
           aria-label={`Transaction volume chart — ${period} period`}
           role="img"
           onMouseLeave={() => setHovered(null)}
