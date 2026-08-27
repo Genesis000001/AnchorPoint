@@ -17,7 +17,8 @@ const b64 = (value: xdr.ScVal) => value.toXDR('base64');
 const envelope = (topics: xdr.ScVal[], data: xdr.ScVal, contractIdByte = 7) =>
   new xdr.ContractEvent({
     ext: new xdr.ExtensionPoint(0),
-    contractId: Buffer.alloc(32, contractIdByte),
+    // The SDK declares byte fields as `Opaque[]` (its own "workaround" alias) while producing and consuming Buffers at runtime
+    contractId: Buffer.alloc(32, contractIdByte) as any,
     type: xdr.ContractEventType.contract(),
     body: new xdr.ContractEventBody(0, new xdr.ContractEventV0({ topics, data })),
   }).toXDR('base64');

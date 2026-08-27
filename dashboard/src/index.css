@@ -29,6 +29,8 @@
   --bg-primary: #020617;
   --text-primary: #f8fafc;
   --card-bg: #0f172a;
+}
+
 [data-theme="light"] {
   --primary: #2563eb;
   --primary-foreground: #ffffff;
