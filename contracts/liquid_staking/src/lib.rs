@@ -25,6 +25,7 @@ pub enum Error {
     RewardsOverflow = 11,
     AdminNotFound = 12,
     OnlyAdmin = 13,
+    MetadataUriTooLong = 14,
 }
 
 
@@ -35,6 +36,12 @@ const MAX_BPS: i128 = 10_000;
 
 /// Default emergency-withdraw penalty in basis points (10% = 1_000 bps).
 const DEFAULT_EMERGENCY_FEE_BPS: i128 = 1_000;
+
+/// Maximum length, in bytes, of any metadata URI or description string.
+///
+/// Bounds the storage rental a single metadata update can commit the
+/// contract to, and keeps values within a size integrators can handle.
+const MAX_METADATA_LEN: u32 = 256;
 
 #[contracttype]
 pub enum DataKey {
@@ -593,6 +600,10 @@ impl LiquidStaking {
     /// * `description` – New human-readable description
     /// * `icon_url`    – New icon / logo URL
     /// * `website`     – New project website URL
+    /// Update the contract branding metadata.
+    ///
+    /// Admin only. Every field is length-bounded to MAX_METADATA_LEN bytes so
+    /// a single update cannot commit the contract to unbounded storage rental.
     pub fn update_contract_meta(
         env: Env,
         caller: Address,
@@ -611,10 +622,27 @@ impl LiquidStaking {
             panic_with_error!(env, Error::OnlyAdmin);
         }
 
-        let meta = ContractMetadata { description, icon_url, website };
+        if description.len() > MAX_METADATA_LEN
+            || icon_url.len() > MAX_METADATA_LEN
+            || website.len() > MAX_METADATA_LEN
+        {
+            panic_with_error!(env, Error::MetadataUriTooLong);
+        }
+
+        let meta = ContractMetadata {
+            description,
+            icon_url,
+            website,
+        };
         env.storage().instance().set(&DataKey::ContractMeta, &meta);
 
-        env.events().publish((symbol_short!("meta_upd"),), meta);
+        // Topic: event name; data: the new icon URI followed by the full
+        // metadata. The URI leads so subscribers get MetadataUpdated(new_uri)
+        // directly, while existing consumers of the whole struct still work.
+        env.events().publish(
+            (symbol_short!("meta_upd"),),
+            (meta.icon_url.clone(), meta),
+        );
     }
 
     /// Return the current contract branding metadata.
@@ -720,7 +748,7 @@ fn u64_to_string(env: &Env, mut n: u64) -> String {
 mod tests {
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as _, Ledger},
+        testutils::{Address as _, Events, Ledger},
         token::{Client as TokenClient, StellarAssetClient},
         Address, Env, IntoVal, String,
     };
@@ -1103,6 +1131,170 @@ mod tests {
 
         let reward_client = TokenClient::new(&env, &reward_token);
         assert_eq!(reward_client.balance(&bob), 4_000);
+    }
+
+
+    // -- Metadata update authorization & validation ---------------------------
+
+    /// Build a String of exactly `n` ASCII bytes.
+    fn string_of_len(env: &Env, n: usize) -> String {
+        let filler = "a".repeat(n);
+        String::from_str(env, &filler)
+    }
+
+    #[test]
+    #[should_panic(expected = "HostError: Error(Contract, #13)")]
+    fn test_metadata_update_rejects_unauthorized_caller() {
+        let (env, ls_id, _, _, alice, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        // A staker is not the admin and must not be able to rebrand the
+        // contract.
+        client.update_contract_meta(
+            &alice,
+            &String::from_str(&env, "hijacked"),
+            &String::from_str(&env, "https://evil.example/icon.png"),
+            &String::from_str(&env, "https://evil.example"),
+        );
+    }
+
+    #[test]
+    fn test_metadata_update_rejected_caller_leaves_state_untouched() {
+        let (env, ls_id, _, admin, alice, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        client.update_contract_meta(
+            &admin,
+            &String::from_str(&env, "official"),
+            &String::from_str(&env, "https://example.com/icon.png"),
+            &String::from_str(&env, "https://example.com"),
+        );
+
+        let attempt = client.try_update_contract_meta(
+            &alice,
+            &String::from_str(&env, "hijacked"),
+            &String::from_str(&env, "https://evil.example/icon.png"),
+            &String::from_str(&env, "https://evil.example"),
+        );
+        assert!(attempt.is_err());
+
+        // The admin's metadata must survive the failed attempt.
+        let meta = client.get_contract_meta();
+        assert_eq!(meta.description, String::from_str(&env, "official"));
+        assert_eq!(
+            meta.icon_url,
+            String::from_str(&env, "https://example.com/icon.png")
+        );
+    }
+
+    #[test]
+    fn test_metadata_accepts_uri_at_max_length() {
+        let (env, ls_id, _, admin, _, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        // MAX_METADATA_LEN is the inclusive upper bound.
+        let uri = string_of_len(&env, MAX_METADATA_LEN as usize);
+        client.update_contract_meta(
+            &admin,
+            &String::from_str(&env, "ok"),
+            &uri,
+            &String::from_str(&env, "https://example.com"),
+        );
+
+        assert_eq!(client.get_contract_meta().icon_url.len(), MAX_METADATA_LEN);
+    }
+
+    #[test]
+    #[should_panic(expected = "HostError: Error(Contract, #14)")]
+    fn test_metadata_rejects_icon_url_over_max_length() {
+        let (env, ls_id, _, admin, _, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        let uri = string_of_len(&env, MAX_METADATA_LEN as usize + 1);
+        client.update_contract_meta(
+            &admin,
+            &String::from_str(&env, "ok"),
+            &uri,
+            &String::from_str(&env, "https://example.com"),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "HostError: Error(Contract, #14)")]
+    fn test_metadata_rejects_website_over_max_length() {
+        let (env, ls_id, _, admin, _, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        let website = string_of_len(&env, MAX_METADATA_LEN as usize + 1);
+        client.update_contract_meta(
+            &admin,
+            &String::from_str(&env, "ok"),
+            &String::from_str(&env, "https://example.com/icon.png"),
+            &website,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "HostError: Error(Contract, #14)")]
+    fn test_metadata_rejects_description_over_max_length() {
+        let (env, ls_id, _, admin, _, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        let description = string_of_len(&env, MAX_METADATA_LEN as usize + 1);
+        client.update_contract_meta(
+            &admin,
+            &description,
+            &String::from_str(&env, "https://example.com/icon.png"),
+            &String::from_str(&env, "https://example.com"),
+        );
+    }
+
+    #[test]
+    fn test_metadata_oversized_update_leaves_state_untouched() {
+        let (env, ls_id, _, admin, _, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        client.update_contract_meta(
+            &admin,
+            &String::from_str(&env, "official"),
+            &String::from_str(&env, "https://example.com/icon.png"),
+            &String::from_str(&env, "https://example.com"),
+        );
+
+        let oversized = string_of_len(&env, MAX_METADATA_LEN as usize + 1);
+        assert!(client
+            .try_update_contract_meta(
+                &admin,
+                &String::from_str(&env, "new"),
+                &oversized,
+                &String::from_str(&env, "https://example.com"),
+            )
+            .is_err());
+
+        assert_eq!(
+            client.get_contract_meta().icon_url,
+            String::from_str(&env, "https://example.com/icon.png")
+        );
+    }
+
+    #[test]
+    fn test_metadata_update_emits_event() {
+        let (env, ls_id, _, admin, _, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        let before = env.events().all().len();
+        client.update_contract_meta(
+            &admin,
+            &String::from_str(&env, "official"),
+            &String::from_str(&env, "https://example.com/icon.png"),
+            &String::from_str(&env, "https://example.com"),
+        );
+        let after = env.events().all().len();
+
+        assert!(
+            after > before,
+            "update_contract_meta must emit a MetadataUpdated event"
+        );
     }
 
     #[test]
