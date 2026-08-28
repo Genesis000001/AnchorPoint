@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @config "../tailwind.config.js";
 
+/* Dark is the default palette; [data-theme="light"] overrides it wholesale. */
 :root {
   --primary: #3b82f6;
   --primary-foreground: #ffffff;
@@ -12,6 +13,9 @@
   --slate-400: #94a3b8;
   --slate-500: #64748b;
   --slate-600: #475569;
+  --bg-primary: #020617;
+  --text-primary: #f8fafc;
+  --card-bg: #0f172a;
   --scrollbar-size: 0.625rem;
   --scrollbar-track: #0f172a;
   --scrollbar-thumb: #64748b;
@@ -19,19 +23,12 @@
   --scrollbar-thumb-active: #cbd5e1;
 }
 
-:root.light {
-  --bg-primary: #f8fafc;
-  --text-primary: #0f172a;
-  --card-bg: #ffffff;
-}
-
-:root.dark {
-  --bg-primary: #020617;
-  --text-primary: #f8fafc;
-  --card-bg: #0f172a;
-}
-
-[data-theme="light"] {
+/*
+ * ThemeProvider writes both `data-theme` and a matching class onto <html>:
+ * the attribute drives these custom properties, the class drives Tailwind's
+ * `dark:` variant.
+ */
+:root[data-theme="light"] {
   --primary: #2563eb;
   --primary-foreground: #ffffff;
   --primary-text: #1d4ed8;
@@ -42,6 +39,9 @@
   --slate-400: #64748b;
   --slate-500: #475569;
   --slate-600: #334155;
+  --bg-primary: #f8fafc;
+  --text-primary: #0f172a;
+  --card-bg: #ffffff;
   --scrollbar-track: #e2e8f0;
   --scrollbar-thumb: #94a3b8;
   --scrollbar-thumb-hover: #64748b;
@@ -90,10 +90,6 @@
     color: var(--text-primary);
     font-family: Inter, sans-serif;
     overflow-x: hidden;
-  }
-
-  [data-theme="light"] body {
-    color: #0f172a;
   }
 
   @media (forced-colors: active) {

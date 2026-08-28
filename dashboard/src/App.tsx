@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useCallback, useEffect, useMemo, useState, createContext, useContext } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   LayoutDashboard,
   ArrowUpRight,
@@ -30,16 +30,9 @@ import { NetworkProvider } from './contexts/NetworkContext';
 import { SessionTimeoutModal } from './components/Auth/SessionTimeoutModal';
 import { FreighterAdapter } from './lib/wallet/FreighterAdapter';
 import { I18nProvider, useTranslation } from './i18n/config';
+import { ThemeProvider, useTheme } from './contexts/ThemeContext';
 
-const ThemeContext = createContext<{
-  theme: 'light' | 'dark';
-  toggleTheme: () => void;
-}>({
-  theme: 'dark',
-  toggleTheme: () => {},
-});
-
-export const useTheme = () => useContext(ThemeContext);
+export { useTheme };
 
 const DashboardOverview = lazy(() => import('./components/DashboardOverview'));
 const TransactionHistory = lazy(() => import('./components/TransactionHistory'));
@@ -159,21 +152,8 @@ const App = () => {
   const [walletError, setWalletError] = useState('');
   const [walletModalOpen, setWalletModalOpen] = useState(false);
   const [walletSessionResetCounter, setWalletSessionResetCounter] = useState(0);
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    const stored = localStorage.getItem('theme');
-    if (stored === 'light' || stored === 'dark') return stored;
-    return 'dark';
-  });
   const walletAdapter = useMemo(() => new FreighterAdapter(), []);
   const { t, language, changeLanguage } = useTranslation();
-
-  const toggleTheme = useCallback(() => {
-    setTheme((prev) => {
-      const next = prev === 'dark' ? 'light' : 'dark';
-      localStorage.setItem('theme', next);
-      return next;
-    });
-  }, []);
 
   const clearClientSessionState = useCallback(() => {
     const shouldClearKey = (key: string) => /token|session|wallet|transaction|balance/i.test(key);
@@ -265,12 +245,6 @@ const App = () => {
     };
   }, []);
 
-  useEffect(() => {
-    const root = document.documentElement;
-    root.classList.remove('light', 'dark');
-    root.classList.add(theme);
-  }, [theme]);
-
   const menuItems = useMemo(
     () => [
       { id: 'dashboard', icon: LayoutDashboard, label: t('nav.overview') },
@@ -314,8 +288,6 @@ const App = () => {
   };
 
   return (
-    <ThemeContext.Provider value={{ theme, toggleTheme }}>
-    <NetworkProvider apiBaseUrl={apiBaseUrl}>
     <div
       className="min-h-screen flex"
       style={
@@ -521,36 +493,39 @@ const App = () => {
         </section>
       </main>
     </div>
-    </NetworkProvider>
-    </ThemeContext.Provider>
   );
 };
 
+/** Navbar switch that flips between the light and dark palettes. */
 const ThemeToggle = () => {
-  const { theme, toggleTheme } = useTheme();
+  const { resolvedTheme, toggleTheme } = useTheme();
+  const next = resolvedTheme === 'dark' ? 'light' : 'dark';
 
   return (
     <button
       type="button"
+      role="switch"
+      aria-checked={resolvedTheme === 'dark'}
       onClick={toggleTheme}
-      aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
+      aria-label={`Switch to ${next} theme`}
       className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-300 transition-all hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
     >
-      {theme === 'dark' ? <Sun size={16} aria-hidden="true" /> : <Moon size={16} aria-hidden="true" />}
-      <span className="hidden sm:inline">{theme === 'dark' ? 'Light' : 'Dark'}</span>
+      {resolvedTheme === 'dark' ? (
+        <Sun size={16} aria-hidden="true" />
+      ) : (
+        <Moon size={16} aria-hidden="true" />
+      )}
+      <span className="hidden sm:inline">{resolvedTheme === 'dark' ? 'Light' : 'Dark'}</span>
     </button>
   );
 };
 
-/**
- * App reads the translation context itself, so the provider has to sit above
- * it — rendering I18nProvider inside App left every `t()` call resolving to
- * the raw key.
- */
 const AppRoot = () => (
-  <I18nProvider>
-    <App />
-  </I18nProvider>
+  <ThemeProvider>
+    <I18nProvider>
+      <App />
+    </I18nProvider>
+  </ThemeProvider>
 );
 
 export default AppRoot;
