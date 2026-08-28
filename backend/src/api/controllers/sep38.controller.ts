@@ -1,4 +1,5 @@
 import { Redis } from 'ioredis';
+import BigNumber from 'bignumber.js';
 import { PriceAggregationService, PriceFetchOptions } from '../../services/price-aggregation.service';
 import { AdvancedCacheService } from '../../services/advanced-cache.service';
 import {
@@ -15,11 +16,12 @@ import prisma from '../../lib/prisma';
  */
 export interface PriceQuote {
   source_asset: string;
-  source_amount: number;
+  source_amount: string;
   destination_asset: string;
-  destination_amount: number;
-  price: number;
-  fee: number;
+  destination_amount: string;
+  price: string;
+  price_decimals: number;
+  fee: string;
   expiration_time: number;
   context?: string;
   cached?: boolean;
@@ -68,9 +70,10 @@ const DEFAULT_VOLUME_TIERS: VolumeTier[] = [
   { maxAmount: Infinity,   feePercent: 0.0005 },
 ];
 
-export function computeVolumeFee(amount: number, tiers: VolumeTier[] = DEFAULT_VOLUME_TIERS): number {
-  const tier = tiers.find((t) => amount <= t.maxAmount) ?? tiers[tiers.length - 1];
-  return parseFloat((amount * tier.feePercent).toFixed(7));
+export function computeVolumeFee(amount: string, tiers: VolumeTier[] = DEFAULT_VOLUME_TIERS): string {
+  const numericAmount = parseFloat(amount);
+  const tier = tiers.find((t) => numericAmount <= t.maxAmount) ?? tiers[tiers.length - 1];
+  return new BigNumber(amount).times(tier.feePercent).toFixed(7);
 }
 
 /**
@@ -141,7 +144,7 @@ export class Sep38Controller {
    */
   async getPriceQuote(
     sourceAsset: string,
-    sourceAmount: number,
+    sourceAmount: string,
     destinationAsset: string,
     context?: string,
     forceRefresh?: boolean,
@@ -159,12 +162,14 @@ export class Sep38Controller {
     }
 
     if (source === dest) {
+      const decimals = SUPPORTED_ASSETS.find((a) => a.code === source)?.decimals || 7;
       return {
         source_asset: sourceAsset,
         source_amount: sourceAmount,
         destination_asset: destinationAsset,
         destination_amount: sourceAmount,
-        price: 1.0,
+        price: new BigNumber(1).toFixed(decimals),
+        price_decimals: decimals,
         fee: computeVolumeFee(sourceAmount),
         expiration_time: buildQuoteExpirationTime(this.cacheConfig.indicativeQuoteExpirationSeconds),
         confidence: 1.0,
@@ -227,7 +232,7 @@ export class Sep38Controller {
    */
   async createQuote(
     sourceAsset: string,
-    sourceAmount: number,
+    sourceAmount: string,
     destinationAsset: string,
     context?: string,
   ): Promise<QuoteResponse> {
@@ -260,7 +265,7 @@ export class Sep38Controller {
    */
   private async computePriceQuote(
     sourceAsset: string,
-    sourceAmount: number,
+    sourceAmount: string,
     destAsset: string,
     context?: string,
   ): Promise<PriceQuote> {
@@ -284,8 +289,8 @@ export class Sep38Controller {
         throw new Error('Invalid price data received');
       }
 
-      const crossRate = sourcePriceUSD / destPriceUSD;
-      const destinationAmount = sourceAmount * crossRate;
+      const crossRate = new BigNumber(sourcePriceUSD).div(destPriceUSD);
+      const destinationAmount = new BigNumber(sourceAmount).times(crossRate);
 
       // Determine confidence and partial status
       const avgConfidence = (sourcePriceData.confidence + destPriceData.confidence) / 2;
@@ -303,8 +308,9 @@ export class Sep38Controller {
         source_asset: sourceAsset,
         source_amount: sourceAmount,
         destination_asset: destAsset,
-        destination_amount: parseFloat(destinationAmount.toFixed(7)),
-        price: parseFloat(crossRate.toFixed(7)),
+        destination_amount: destinationAmount.toFixed(SUPPORTED_ASSETS.find((a) => a.code === destAsset)?.decimals || 7),
+        price: crossRate.toFixed(7),
+        price_decimals: 7,
         fee: computeVolumeFee(sourceAmount),
         expiration_time: buildQuoteExpirationTime(this.cacheConfig.indicativeQuoteExpirationSeconds),
         confidence: parseFloat(avgConfidence.toFixed(4)),
@@ -331,7 +337,7 @@ export class Sep38Controller {
    */
   private computeFallbackQuote(
     sourceAsset: string,
-    sourceAmount: number,
+    sourceAmount: string,
     destAsset: string,
     context?: string,
   ): PriceQuote {
@@ -342,15 +348,16 @@ export class Sep38Controller {
       throw new Error(`Unable to determine prices for ${sourceAsset}/${destAsset}`);
     }
 
-    const crossRate = sourcePriceUSD / destPriceUSD;
-    const destinationAmount = sourceAmount * crossRate;
+    const crossRate = new BigNumber(sourcePriceUSD).div(destPriceUSD);
+    const destinationAmount = new BigNumber(sourceAmount).times(crossRate);
 
     const quote: PriceQuote = {
       source_asset: sourceAsset,
       source_amount: sourceAmount,
       destination_asset: destAsset,
-      destination_amount: parseFloat(destinationAmount.toFixed(7)),
-      price: parseFloat(crossRate.toFixed(7)),
+      destination_amount: destinationAmount.toFixed(SUPPORTED_ASSETS.find((a) => a.code === destAsset)?.decimals || 7),
+      price: crossRate.toFixed(7),
+      price_decimals: 7,
       fee: computeVolumeFee(sourceAmount),
       expiration_time: buildQuoteExpirationTime(this.cacheConfig.indicativeQuoteExpirationSeconds),
       confidence: 0.5,
