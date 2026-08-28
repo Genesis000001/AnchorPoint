@@ -11,6 +11,9 @@ import { config } from '../config/env';
 import { stellarService } from './stellar.service';
 import logger from '../utils/logger';
 
+/** Maximum number of historical price observations to retain per subscription. */
+const MAX_HISTORY_POINTS = 500;
+
 /**
  * SEP-40 (Price Oracle) asset reference.
  *
@@ -53,6 +56,8 @@ interface Subscription {
   listeners: Set<PriceUpdateListener>;
   errorListeners: Set<PriceErrorListener>;
   lastPrice?: Sep40PriceData;
+  /** Historical price observations, oldest first, capped at MAX_HISTORY_POINTS. */
+  history: Sep40PriceData[];
   /** Guards against overlapping polls for the same subscription. */
   polling: boolean;
 }
@@ -168,6 +173,7 @@ export class Sep40PriceFeedManager extends EventEmitter {
         intervalMs: options.intervalMs ?? this.defaultIntervalMs,
         listeners: new Set(),
         errorListeners: new Set(),
+        history: [],
         polling: false,
       };
       this.subscriptions.set(key, sub);
@@ -238,6 +244,22 @@ export class Sep40PriceFeedManager extends EventEmitter {
   }
 
   /**
+   * Returns the historical price observations for an asset, oldest first.
+   * The length is capped at `maxCount` (default all retained points).
+   */
+  getPriceHistory(asset: Sep40Asset, maxCount?: number): Sep40PriceData[] {
+    const sub = this.subscriptions.get(assetKey(asset));
+    if (!sub) {
+      return [];
+    }
+    const history = sub.history;
+    if (maxCount === undefined || maxCount >= history.length) {
+      return [...history];
+    }
+    return history.slice(history.length - maxCount);
+  }
+
+  /**
    * Forces an immediate on-chain read for an asset, updating the cache and
    * notifying listeners. Also usable ad-hoc without an active subscription.
    */
@@ -246,6 +268,7 @@ export class Sep40PriceFeedManager extends EventEmitter {
     const sub = this.subscriptions.get(assetKey(asset));
     if (sub) {
       sub.lastPrice = price;
+      this.addToHistory(sub, price);
       this.notify(sub, price);
     }
     return price;
@@ -303,6 +326,7 @@ export class Sep40PriceFeedManager extends EventEmitter {
         sub.lastPrice.price !== price.price ||
         sub.lastPrice.timestamp !== price.timestamp;
       sub.lastPrice = price;
+      this.addToHistory(sub, price);
       if (changed) {
         this.notify(sub, price);
       }
@@ -346,6 +370,17 @@ export class Sep40PriceFeedManager extends EventEmitter {
     // Only emit if there is a listener, otherwise Node throws for 'error' events.
     if (this.listenerCount('error') > 0) {
       this.emit('error', error, sub.asset);
+    }
+  }
+
+  /**
+   * Records a price observation in the subscription's history buffer, trimming
+   * to `MAX_HISTORY_POINTS` entries (oldest removed).
+   */
+  private addToHistory(sub: Subscription, price: Sep40PriceData): void {
+    sub.history.push(price);
+    if (sub.history.length > MAX_HISTORY_POINTS) {
+      sub.history.shift();
     }
   }
 
