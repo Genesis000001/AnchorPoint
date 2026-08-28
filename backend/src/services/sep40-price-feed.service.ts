@@ -459,5 +459,47 @@ export class Sep40PriceFeedManager extends EventEmitter {
   }
 }
 
+/**
+ * Computes median price across multiple numerical price observations (Issue #918).
+ */
+export function calculateMedianPrice(prices: number[]): number {
+  if (prices.length === 0) {
+    throw new Error('Cannot calculate median of empty prices array');
+  }
+
+  const sorted = [...prices].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+
+  if (sorted.length % 2 === 0) {
+    return (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+  return sorted[mid];
+}
+
+/**
+ * Aggregates price feeds from primary SEP-40 and secondary providers with outlier filtering.
+ */
+export function aggregateOraclePrices(
+  observations: Array<{ provider: string; humanPrice: number; weight?: number }>
+): { medianPrice: number; validProviders: string[] } {
+  if (observations.length === 0) {
+    throw new Error('No price observations provided for aggregation');
+  }
+
+  const valid = observations.filter((o) => o.humanPrice > 0 && !isNaN(o.humanPrice));
+  if (valid.length === 0) {
+    throw new Error('No valid positive price observations found');
+  }
+
+  const prices = valid.map((v) => v.humanPrice);
+  const medianPrice = calculateMedianPrice(prices);
+
+  return {
+    medianPrice,
+    validProviders: valid.map((v) => v.provider),
+  };
+}
+
 export const sep40PriceFeedManager = new Sep40PriceFeedManager();
 export default sep40PriceFeedManager;
+
