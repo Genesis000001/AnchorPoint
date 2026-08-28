@@ -25,7 +25,8 @@ import { StatusBanner } from './components/StatusBanner';
 import { UserAvatarDropdown } from './components/UserAvatarDropdown';
 import { CopyablePublicKey } from './components/CopyablePublicKey';
 import { WalletModal } from './components/WalletModal';
-import { NetworkSelector } from './components/NetworkSelector';
+import { NetworkSelector, NetworkBanner } from './components/NetworkSelector';
+import { NetworkProvider } from './contexts/NetworkContext';
 import { SessionTimeoutModal } from './components/Auth/SessionTimeoutModal';
 import { FreighterAdapter } from './lib/wallet/FreighterAdapter';
 import { I18nProvider, useTranslation } from './i18n/config';
@@ -398,7 +399,7 @@ const App = () => {
                 <option value="es">{t('language.es')}</option>
                 <option value="pt">{t('language.pt')}</option>
               </select>
-              <NetworkSelector apiBaseUrl={apiBaseUrl} />
+              <NetworkSelector />
               <UserAvatarDropdown
                 onSettings={() => setActiveTab('settings')}
                 onNotifications={() => setActiveTab('notifications')}
@@ -408,6 +409,8 @@ const App = () => {
               />
           </div>
         </header>
+
+        <NetworkBanner />
 
         <section
           className="mx-auto w-full max-w-7xl px-3 py-5 sm:px-6 sm:py-8 lg:px-8"
