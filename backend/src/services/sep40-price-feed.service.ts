@@ -9,6 +9,7 @@ import {
 } from '@stellar/stellar-sdk';
 import { config } from '../config/env';
 import { stellarService } from './stellar.service';
+import { sorobanRpcProxy } from '../resilience/soroban.proxy';
 import logger from '../utils/logger';
 
 /**
@@ -444,7 +445,8 @@ export class Sep40PriceFeedManager extends EventEmitter {
       .setTimeout(30)
       .build();
 
-    const simulated = (await rpcServer.simulateTransaction(tx)) as {
+    const cacheKey = `sep40:${method}:${args.map((a) => a.toXDR('base64')).join(',')}`;
+    const simulated = (await sorobanRpcProxy.simulateTransaction(rpcServer, tx, cacheKey)) as {
       error?: string;
       result?: { retval?: xdr.ScVal };
     };
