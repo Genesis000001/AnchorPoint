@@ -40,6 +40,10 @@ export interface RateLimitOptions {
   skipPaths?: string[];
   /** Tier limit map for dynamic rate limiting */
   tierLimits?: Record<string, { windowMs: number; max: number }>;
+  /** Emit RateLimit-* headers (IETF draft). Defaults to true. */
+  standardHeaders?: boolean;
+  /** Emit X-RateLimit-* headers. Defaults to false. */
+  legacyHeaders?: boolean;
 }
 
 function resolveMax(max: number | ((req: Request) => number) | undefined, req: Request): number {
@@ -74,6 +78,8 @@ export const createRateLimiter = (options: RateLimitOptions = {}) => {
     keyPrefix = 'rl:',
     skipPaths = [],
     tierLimits,
+    standardHeaders = true,
+    legacyHeaders = false,
   } = options;
 
   const allSkipPaths = [...HEALTH_SKIP_PATHS, ...skipPaths];
@@ -94,11 +100,11 @@ export const createRateLimiter = (options: RateLimitOptions = {}) => {
     windowMs: effectiveWindowMs,
     max: effectiveMax,
     message: { error: message },
-    standardHeaders: true,
-    legacyHeaders: false,
+    standardHeaders,
+    legacyHeaders,
     skip: (req: Request) => allSkipPaths.some(p => req.path === p || req.path.startsWith(p)),
     store: new RedisStore({
-      sendCommand: (...args: string[]) => redis.call(...args),
+      sendCommand: (...args: string[]) => (redis as any).call(...args),
       prefix: keyPrefix,
     }),
 
@@ -134,6 +140,14 @@ export const authLimiter = createRateLimiter({
   max: 10,
   message: 'Too many authentication attempts, please try again after 10 minutes.',
   keyPrefix: 'rl:auth:',
+});
+
+export const sep10ChallengeLimiter = createRateLimiter({
+  windowMs: 60 * 1000,
+  max: 10,
+  message: 'Too many challenge requests, please try again later.',
+  keyPrefix: 'rl:sep10:challenge:',
+  legacyHeaders: true,
 });
 
 export const sensitiveApiLimiter = createRateLimiter({
@@ -176,7 +190,7 @@ export const submissionLimiterOptions = {
   standardHeaders: true,
   legacyHeaders: false,
   store: new RedisStore({
-    sendCommand: (...args: string[]) => redis.call(...args),
+    sendCommand: (...args: string[]) => (redis as any).call(...args),
     prefix: 'rl:submit:',
   }),
   keyGenerator: (req: Request) => {

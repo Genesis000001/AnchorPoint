@@ -87,9 +87,10 @@ async function connectWithRetry(client: PrismaClient): Promise<void> {
 // ── Client instantiation ──────────────────────────────────────────────
 const databaseUrl = buildDatabaseUrl();
 
-const prismaClientOptions = databaseUrl !== process.env.DATABASE_URL
-  ? { datasources: { db: { url: databaseUrl } } }
-  : {};
+const prismaClientOptions: { datasources: { db: { url: string } } } | undefined =
+  databaseUrl !== process.env.DATABASE_URL
+    ? { datasources: { db: { url: databaseUrl } } }
+    : undefined;
 
 const prisma =
   global.__prisma ??
