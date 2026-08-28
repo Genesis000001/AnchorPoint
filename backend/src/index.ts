@@ -42,6 +42,7 @@ import prisma from './lib/prisma';
 import { redis } from './lib/redis';
 import { validateStorageConfigOnStartup } from './services/storage-provider.service';
 import { uploadExpiryScheduler } from './workers/upload-expiry.scheduler';
+import { dbMetricsScheduler } from './workers/db-metrics.scheduler';
 import { initSocket } from './lib/socket';
 import { kycExpiryScheduler } from './workers/kyc-expiry.scheduler';
 
@@ -56,6 +57,10 @@ function gracefulShutdown(signal: string): void {
 
   if (uploadExpiryScheduler) {
     uploadExpiryScheduler.stop();
+  }
+
+  if (dbMetricsScheduler) {
+    dbMetricsScheduler.stop();
   }
 
   if (server) {
@@ -380,6 +385,7 @@ if (process.env.NODE_ENV !== 'test') {
         feeReportScheduler.start();
         uploadExpiryScheduler.start();
         kycExpiryScheduler.start();
+        dbMetricsScheduler.start();
       });
     });
     if (!decryptionOk && config.NODE_ENV === 'production') {
