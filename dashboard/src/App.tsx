@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useCallback, useEffect, useMemo, useState, createContext, useContext } from 'react';
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   LayoutDashboard,
   ArrowUpRight,
@@ -25,20 +25,14 @@ import { StatusBanner } from './components/StatusBanner';
 import { UserAvatarDropdown } from './components/UserAvatarDropdown';
 import { CopyablePublicKey } from './components/CopyablePublicKey';
 import { WalletModal } from './components/WalletModal';
-import { NetworkSelector } from './components/NetworkSelector';
+import { NetworkSelector, NetworkBanner } from './components/NetworkSelector';
+import { NetworkProvider } from './contexts/NetworkContext';
 import { SessionTimeoutModal } from './components/Auth/SessionTimeoutModal';
 import { FreighterAdapter } from './lib/wallet/FreighterAdapter';
 import { I18nProvider, useTranslation } from './i18n/config';
+import { ThemeProvider, useTheme } from './contexts/ThemeContext';
 
-const ThemeContext = createContext<{
-  theme: 'light' | 'dark';
-  toggleTheme: () => void;
-}>({
-  theme: 'dark',
-  toggleTheme: () => {},
-});
-
-export const useTheme = () => useContext(ThemeContext);
+export { useTheme };
 
 const DashboardOverview = lazy(() => import('./components/DashboardOverview'));
 const TransactionHistory = lazy(() => import('./components/TransactionHistory'));
@@ -149,32 +143,18 @@ const TabFallback = () => (
 );
 
 const App = () => {
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    const stored = localStorage.getItem('theme');
-    if (stored === 'light' || stored === 'dark') return stored;
-    return 'dark';
-  });
-
-  const toggleTheme = useCallback(() => {
-    setTheme((prev) => {
-      const next = prev === 'dark' ? 'light' : 'dark';
-      localStorage.setItem('theme', next);
-      return next;
-    });
-  }, []);
+  const { resolvedTheme } = useTheme();
 
   useEffect(() => {
     const root = document.documentElement;
     root.classList.remove('light', 'dark');
-    root.classList.add(theme);
-  }, [theme]);
+    root.classList.add(resolvedTheme);
+  }, [resolvedTheme]);
 
   return (
-    <ThemeContext.Provider value={{ theme, toggleTheme }}>
-      <I18nProvider>
-        <AppShell />
-      </I18nProvider>
-    </ThemeContext.Provider>
+    <I18nProvider>
+      <AppShell />
+    </I18nProvider>
   );
 };
 
@@ -436,7 +416,7 @@ const AppShell = () => {
                 <option value="pt">{t('language.pt')}</option>
                 <option value="fr">{t('language.fr')}</option>
               </select>
-              <NetworkSelector apiBaseUrl={apiBaseUrl} />
+              <NetworkSelector />
               <UserAvatarDropdown
                 onSettings={() => setActiveTab('settings')}
                 onNotifications={() => setActiveTab('notifications')}
@@ -446,6 +426,8 @@ const AppShell = () => {
               />
           </div>
         </header>
+
+        <NetworkBanner />
 
         <section
           className="mx-auto w-full max-w-7xl px-3 py-5 sm:px-6 sm:py-8 lg:px-8"
@@ -531,20 +513,36 @@ const AppShell = () => {
   );
 };
 
+/** Navbar switch that flips between the light and dark palettes. */
 const ThemeToggle = () => {
-  const { theme, toggleTheme } = useTheme();
+  const { resolvedTheme, toggleTheme } = useTheme();
+  const next = resolvedTheme === 'dark' ? 'light' : 'dark';
 
   return (
     <button
       type="button"
+      role="switch"
+      aria-checked={resolvedTheme === 'dark'}
       onClick={toggleTheme}
-      aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
+      aria-label={`Switch to ${next} theme`}
       className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-300 transition-all hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
     >
-      {theme === 'dark' ? <Sun size={16} aria-hidden="true" /> : <Moon size={16} aria-hidden="true" />}
-      <span className="hidden sm:inline">{theme === 'dark' ? 'Light' : 'Dark'}</span>
+      {resolvedTheme === 'dark' ? (
+        <Sun size={16} aria-hidden="true" />
+      ) : (
+        <Moon size={16} aria-hidden="true" />
+      )}
+      <span className="hidden sm:inline">{resolvedTheme === 'dark' ? 'Light' : 'Dark'}</span>
     </button>
   );
 };
 
-export default App;
+const AppRoot = () => (
+  <ThemeProvider>
+    <I18nProvider>
+      <App />
+    </I18nProvider>
+  </ThemeProvider>
+);
+
+export default AppRoot;
