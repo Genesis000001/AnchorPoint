@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Info, Clock, RefreshCw, CheckCircle2, AlertCircle, ArrowRightLeft } from 'lucide-react';
+import { Info, RefreshCw, CheckCircle2, AlertCircle, ArrowRightLeft } from 'lucide-react';
 import Tooltip from './Tooltip';
 
 export type QuoteType = 'fixed' | 'indicative';
@@ -40,8 +40,9 @@ export const Sep38QuotePanel: React.FC<Sep38QuotePanelProps> = ({
   const [quoteType, setQuoteType] = useState<QuoteType>('fixed');
   const [sellAmount, setSellAmount] = useState('');
   const [buyAmount, setBuyAmount] = useState('');
-  const [sellAsset, setSellAsset] = useState('USDC');
-  const [buyAsset, setBuyAsset] = useState('USD');
+  // Asset pair is fixed for this panel; only the amounts are editable.
+  const [sellAsset] = useState('USDC');
+  const [buyAsset] = useState('USD');
 
   const [quote, setQuote] = useState<Sep38Quote | null>(null);
   const [remainingSeconds, setRemainingSeconds] = useState<number>(initialValiditySeconds);
