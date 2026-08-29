@@ -1,39 +1,35 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { ConfirmModal } from './ConfirmModal';
+import { useNetwork } from '../contexts/NetworkContext';
+import { NETWORK_TYPES } from '../lib/stellar/networks';
+import type { NetworkType } from '../lib/stellar/networks';
 
-type NetworkType = 'TESTNET' | 'PUBLIC' | 'FUTURENET';
+const networkColor = (net: NetworkType) => {
+  switch (net) {
+    case 'PUBLIC':
+      return 'bg-rose-500/10 text-rose-400 border-rose-500/30';
+    case 'FUTURENET':
+      return 'bg-amber-500/10 text-amber-400 border-amber-500/30';
+    default:
+      return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30';
+  }
+};
 
-interface NetworkSelectorProps {
-  apiBaseUrl: string;
-}
-
-export const NetworkSelector: React.FC<NetworkSelectorProps> = ({ apiBaseUrl }) => {
-  const [network, setNetwork] = useState<NetworkType>('TESTNET');
-  const [loading, setLoading] = useState(false);
+/**
+ * Network switch wired to the global {@link useNetwork} context, so confirming
+ * a change repoints the Horizon and Soroban RPC endpoints for the whole app
+ * rather than only this component's local state.
+ */
+export const NetworkSelector: React.FC = () => {
+  const { network, status, error, switchNetwork } = useNetwork();
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [targetNetwork, setTargetNetwork] = useState<NetworkType>('TESTNET');
+  const [targetNetwork, setTargetNetwork] = useState<NetworkType>(network);
 
-  useEffect(() => {
-    fetchCurrentNetwork();
-  }, []);
+  const loading = status === 'loading';
 
-  const fetchCurrentNetwork = async () => {
-    try {
-      const response = await fetch(`${apiBaseUrl}/api/admin/network`);
-      if (response.ok) {
-        const data = await response.json();
-        if (data.network) {
-          setNetwork(data.network);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to fetch network config:', err);
-    }
-  };
-
-  const handleNetworkChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const value = e.target.value as NetworkType;
+  const handleNetworkChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const value = event.target.value as NetworkType;
     if (value !== network) {
       setTargetNetwork(value);
       setIsModalOpen(true);
@@ -42,43 +38,14 @@ export const NetworkSelector: React.FC<NetworkSelectorProps> = ({ apiBaseUrl }) 
 
   const handleNetworkChangeConfirm = async () => {
     setIsModalOpen(false);
-    setLoading(true);
-
-    try {
-      const response = await fetch(`${apiBaseUrl}/api/admin/network`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ network: targetNetwork }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to switch network');
-      }
-
-      setNetwork(targetNetwork);
-    } catch (err) {
-      console.error('Error switching network:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const networkColor = (net: NetworkType) => {
-    switch (net) {
-      case 'PUBLIC':
-        return 'bg-rose-500/10 text-rose-400 border-rose-500/30';
-      case 'FUTURENET':
-        return 'bg-amber-500/10 text-amber-400 border-amber-500/30';
-      default:
-        return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30';
-    }
+    await switchNetwork(targetNetwork);
   };
 
   return (
     <div className="flex items-center gap-2">
-      <span className={`hidden rounded-full border px-2.5 py-1 text-xs font-semibold md:inline ${networkColor(network)}`}>
+      <span
+        className={`hidden rounded-full border px-2.5 py-1 text-xs font-semibold md:inline ${networkColor(network)}`}
+      >
         {network}
       </span>
 
@@ -99,10 +66,18 @@ export const NetworkSelector: React.FC<NetworkSelectorProps> = ({ apiBaseUrl }) 
         disabled={loading}
         className="input-field text-sm font-medium pr-8"
       >
-        <option value="TESTNET">TESTNET</option>
-        <option value="PUBLIC">PUBLIC (Mainnet)</option>
-        <option value="FUTURENET">FUTURENET</option>
+        {NETWORK_TYPES.map((type) => (
+          <option key={type} value={type}>
+            {type === 'PUBLIC' ? 'PUBLIC (Mainnet)' : type}
+          </option>
+        ))}
       </select>
+
+      {error && (
+        <span role="alert" className="hidden max-w-48 truncate text-xs text-rose-300 md:inline">
+          {error}
+        </span>
+      )}
 
       <ConfirmModal
         isOpen={isModalOpen}
@@ -113,6 +88,35 @@ export const NetworkSelector: React.FC<NetworkSelectorProps> = ({ apiBaseUrl }) 
         onConfirm={handleNetworkChangeConfirm}
         onCancel={() => setIsModalOpen(false)}
       />
+    </div>
+  );
+};
+
+/**
+ * Full-width strip naming the network every request is currently hitting.
+ * Mainnet is styled as a warning because operations there move real value.
+ */
+export const NetworkBanner: React.FC = () => {
+  const { network, endpoints } = useNetwork();
+  const { isMainnet, label, horizonUrl } = endpoints;
+
+  return (
+    <div
+      data-testid="network-banner"
+      data-network={network}
+      role="status"
+      aria-live="polite"
+      className={`flex flex-wrap items-center gap-x-3 gap-y-1 border-b px-3 py-1.5 text-xs sm:px-6 lg:px-8 ${
+        isMainnet
+          ? 'border-rose-500/30 bg-rose-500/10 text-rose-200'
+          : 'border-slate-800 bg-slate-900/60 text-slate-400'
+      }`}
+    >
+      {isMainnet && <AlertTriangle size={12} aria-hidden="true" className="shrink-0" />}
+      <span className="font-semibold">
+        {isMainnet ? `Live on ${label}` : `Connected to ${label}`}
+      </span>
+      <span className="truncate font-mono text-[11px] opacity-80">{horizonUrl}</span>
     </div>
   );
 };

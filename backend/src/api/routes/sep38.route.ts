@@ -29,7 +29,7 @@ router.get('/price', async (req: Request, res: Response) => {
 
     const priceQuote = await sep38Controller.getPriceQuote(
       source_asset as string,
-      parseFloat(source_amount as string),
+      source_amount as string,
       destination_asset as string,
       context as string,
     );
@@ -80,7 +80,7 @@ router.post('/quote', async (req: Request, res: Response) => {
 
     const priceQuote = await sep38Controller.createQuote(
       source_asset,
-      parseFloat(source_amount),
+      String(source_amount),
       destination_asset,
       context,
     );

@@ -68,7 +68,9 @@ describe('App wallet disconnect handling', () => {
 
     render(<App />);
 
+    // The header button opens the provider picker; Freighter drives the adapter.
     fireEvent.click(screen.getByRole('button', { name: /connect wallet/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /Freighter/ }));
     await waitFor(() => expect(connectMock).toHaveBeenCalledTimes(1));
     await screen.findByText(/Connected wallet:/i);
 

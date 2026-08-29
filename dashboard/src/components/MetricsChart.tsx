@@ -11,6 +11,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
+import { ChartSkeleton } from './Skeletons';
 
 export type VolumePoint = {
   /** ISO date (YYYY-MM-DD) for the trading day. */
@@ -132,6 +133,8 @@ interface MetricsChartProps {
   data?: VolumePoint[];
   /** Time window selected on first render. */
   defaultWindow?: TimeWindow;
+  /** Renders the placeholder instead of the plot while the fetch is in flight. */
+  isLoading?: boolean;
 }
 
 /**
@@ -139,7 +142,7 @@ interface MetricsChartProps {
  * window, switchable between line and bar marks, with USD-formatted hover
  * tooltips. Both series share one y-axis so their magnitudes stay comparable.
  */
-export const MetricsChart = ({ data, defaultWindow = '7d' }: MetricsChartProps) => {
+export const MetricsChart = ({ data, defaultWindow = '7d', isLoading = false }: MetricsChartProps) => {
   const [timeWindow, setTimeWindow] = useState<TimeWindow>(defaultWindow);
   const [mark, setMark] = useState<'line' | 'bar'>('line');
 
@@ -161,6 +164,11 @@ export const MetricsChart = ({ data, defaultWindow = '7d' }: MetricsChartProps) 
       ),
     [series],
   );
+
+  // Placed after the hooks above so the hook order stays stable across loads.
+  if (isLoading) {
+    return <ChartSkeleton label="Loading daily volume chart" />;
+  }
 
   // Thin x-axis labels on longer windows so day ticks never collide.
   const tickInterval = Math.max(0, Math.ceil(series.length / 7) - 1);
@@ -230,7 +238,8 @@ export const MetricsChart = ({ data, defaultWindow = '7d' }: MetricsChartProps) 
       </div>
 
       <div
-        className="min-h-64 flex-1"
+        className="min-h-64 flex-1 animate-fade-in"
+        data-testid="metrics-chart-plot"
         role="img"
         aria-label={`Daily deposit and withdrawal volume over the last ${days} days. Deposits total ${usdFull.format(totals.deposits)}, withdrawals total ${usdFull.format(totals.withdrawals)}.`}
       >

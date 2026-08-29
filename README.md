@@ -138,6 +138,72 @@ docker-compose down -v
 
 For local development without Docker, see the [Backend README](./backend/README.md).
 
+## Database Backups
+
+`scripts/backup.sh` takes automated PostgreSQL backups and verifies them before
+they are considered complete.
+
+### Usage
+
+```bash
+DATABASE_URL=postgresql://user:pass@host:5432/anchorpoint \
+  BACKUP_DIR=/var/backups/anchorpoint \
+  BACKUP_RETENTION=14 \
+  scripts/backup.sh
+```
+
+Recommended cron entry (daily at 02:00):
+
+```cron
+0 2 * * * /path/to/AnchorPoint/scripts/backup.sh >> /var/log/anchorpoint-backup.log 2>&1
+```
+
+### What the script does
+
+1. **Dump & compress** — `pg_dump` (plain format, no owner/ACL) piped through gzip.
+2. **SHA-256 checksum** — a `.sha256` sidecar file is written next to every
+   backup (`anchorpoint-<timestamp>.sql.gz.sha256`) so backup integrity can be
+   verified independently:
+
+   ```bash
+   cd /var/backups/anchorpoint
+   sha256sum -c anchorpoint-*.sql.gz.sha256
+   ```
+
+3. **Automated restore check** — when Docker is available (or
+   `BACKUP_VERIFY_RESTORE=1` is set), the script boots a throwaway
+   `postgres:16-alpine` container, restores the fresh backup into it, and
+   removes the container. A backup that cannot be restored is treated as a
+   failure and triggers an alert.
+4. **Failure alerts** — if the dump or restore verification fails, a JSON alert
+   is POSTed to the configured webhook:
+
+   ```bash
+   ALERT_WEBHOOK_URL=https://hooks.slack.com/services/...   # Slack
+   ALERT_WEBHOOK_URL=https://events.pagerduty.com/v2/enqueue/...  # PagerDuty
+   ```
+
+5. **Retention** — backups older than `BACKUP_RETENTION` days are removed.
+
+### Verifying backups manually
+
+```bash
+# Integrity check against the stored checksum
+sha256sum -c /var/backups/anchorpoint/anchorpoint-*.sql.gz.sha256
+
+# Spot-check that the dump is restorable
+gunzip -c /var/backups/anchorpoint/anchorpoint-latest.sql.gz | head -50
+```
+
+### Testing the script
+
+`scripts/backup.test.sh` exercises checksum generation, restore verification,
+and failure-alert wiring with mocked binaries (no database or Docker needed):
+
+```bash
+bash scripts/backup.test.sh
+```
+
 ## Testing
 
 ### End-to-End Test Suite

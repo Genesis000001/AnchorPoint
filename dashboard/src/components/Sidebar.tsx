@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from 'framer-motion';
-import { Sun, Moon, X } from 'lucide-react';
+import { Sun, Moon } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import type { ComponentType } from 'react';
 import type { UiConfig } from '../types';
@@ -112,7 +112,7 @@ export const Sidebar = ({
                         : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
                     }`}
                   >
-                    <Icon size={20} aria-hidden="true" />
+                    <Icon size={20} aria-hidden />
                     <span className="font-medium">{item.label}</span>
                   </button>
                 </li>

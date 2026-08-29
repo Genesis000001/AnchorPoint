@@ -18,7 +18,7 @@ export type Sep24HttpClient = (
 ) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
 
 export interface Sep24StatusWebhookPayload {
-  event: 'sep24.transaction.status_changed';
+  event: 'sep24.transaction.status_changed' | 'sep24.transaction.claimable';
   occurredAt: string;
   previousStatus: string;
   transaction: {
@@ -29,6 +29,7 @@ export interface Sep24StatusWebhookPayload {
     asset_code?: string;
     stellar_transaction_id?: string;
     external_transaction_id?: string;
+    claimable_balance_id?: string;
   };
 }
 
@@ -42,6 +43,8 @@ export interface Sep24CallbackNotifyInput {
   assetCode?: string;
   stellarTransactionId?: string;
   externalTransactionId?: string;
+  claimableBalanceId?: string;
+  event?: 'sep24.transaction.status_changed' | 'sep24.transaction.claimable';
 }
 
 export interface Sep24CallbackDeliveryResult {
@@ -72,8 +75,14 @@ const defaultHttpClient: Sep24HttpClient = async (url, init) => {
 export function buildSep24StatusWebhookPayload(
   input: Sep24CallbackNotifyInput
 ): Sep24StatusWebhookPayload {
+  const event: 'sep24.transaction.status_changed' | 'sep24.transaction.claimable' =
+    input.event ||
+    (input.claimableBalanceId || input.nextStatus === 'pending_external'
+      ? 'sep24.transaction.claimable'
+      : 'sep24.transaction.status_changed');
+
   return {
-    event: 'sep24.transaction.status_changed',
+    event,
     occurredAt: new Date().toISOString(),
     previousStatus: input.previousStatus,
     transaction: {
@@ -88,9 +97,13 @@ export function buildSep24StatusWebhookPayload(
       ...(input.externalTransactionId
         ? { external_transaction_id: input.externalTransactionId }
         : {}),
+      ...(input.claimableBalanceId
+        ? { claimable_balance_id: input.claimableBalanceId }
+        : {}),
     },
   };
 }
+
 
 /**
  * Delivers an idempotent SEP-24 deposit/withdrawal status webhook to the

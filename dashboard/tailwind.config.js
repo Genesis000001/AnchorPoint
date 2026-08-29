@@ -21,11 +21,17 @@ export default {
       },
       animation: {
         'shimmer': 'shimmer 2s linear infinite',
+        // Softens the swap from chart skeleton to rendered canvas.
+        'fade-in': 'fade-in 220ms ease-out both',
       },
       keyframes: {
         shimmer: {
           '0%': { backgroundPosition: '-200% 0' },
           '100%': { backgroundPosition: '200% 0' },
+        },
+        'fade-in': {
+          '0%': { opacity: '0' },
+          '100%': { opacity: '1' },
         },
       },
     },

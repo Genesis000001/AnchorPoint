@@ -248,6 +248,10 @@ export const getRelayerConfig = async (
       maxAmount: config.maxAmount,
       allowedSpenders: config.allowedSpenders,
       expiryWindowSeconds: config.expiryWindowSeconds,
+      baseFee: config.baseFee,
+      surgeMultiplier: config.surgeMultiplier,
+      maxFeeCap: config.maxFeeCap,
+      dynamicFeesEnabled: config.dynamicFeesEnabled,
     };
 
     return res.status(200).json(publicConfig);
@@ -258,3 +262,70 @@ export const getRelayerConfig = async (
     });
   }
 };
+
+/**
+ * GET /api/relayer/fee-estimate
+ * 
+ * Get current dynamic fee estimate with surge pricing & fee cap
+ */
+export const getFeeEstimate = async (
+  req: Request,
+  res: Response
+): Promise<Response> => {
+  try {
+    const multiplierParam = req.query.multiplier as string | undefined;
+    const multiplier = multiplierParam ? parseFloat(multiplierParam) : undefined;
+
+    const estimate = await relayerService.getFeeEstimate(multiplier);
+    return res.status(200).json({
+      success: true,
+      data: estimate,
+    });
+  } catch (error) {
+    logger.error('Fee estimate error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Internal server error',
+    });
+  }
+};
+
+/**
+ * POST /api/relayer/fee-bump
+ * 
+ * Submit a Fee Bump transaction for a pending or congested transaction
+ */
+export const submitFeeBump = async (
+  req: Request,
+  res: Response
+): Promise<Response> => {
+  try {
+    const { transactionXdr, networkPassphrase, maxFee } = req.body;
+
+    if (!transactionXdr) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required field: transactionXdr is required',
+      });
+    }
+
+    const result = await relayerService.submitFeeBump({
+      transactionXdr,
+      networkPassphrase,
+      maxFee,
+    });
+
+    if (result.success) {
+      return res.status(200).json(result);
+    } else {
+      return res.status(400).json(result);
+    }
+  } catch (error) {
+    logger.error('Fee bump submission error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Internal server error',
+    });
+  }
+};
+
