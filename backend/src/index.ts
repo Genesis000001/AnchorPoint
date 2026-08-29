@@ -25,6 +25,7 @@ import authRouter from './api/routes/auth.route';
 import { errorHandler } from './api/middleware/error.middleware';
 import { metricsMiddleware, connectionTracker } from './api/middleware/metrics.middleware';
 import { securityHeadersMiddleware } from './api/middleware/security-headers.middleware';
+import { sanitizeBodyMiddleware } from './api/middleware/sanitize.middleware';
 import { tracingMiddleware } from './api/middleware/tracing.middleware';
 import configService from './services/config.service';
 import { stellarService } from './services/stellar.service';
@@ -135,6 +136,7 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(sanitizeBodyMiddleware);
 
 /**
  * @swagger
@@ -218,6 +220,7 @@ app.get('/', (req: Request, res: Response) => {
 app.get('/health', async (req: Request, res: Response) => {
   let dbStatus = 'UP';
   let redisStatus = 'UP';
+  let redisLatency = 0;
   let sorobanRpcStatus = 'UP';
   let isHealthy = true;
 
@@ -230,10 +233,13 @@ app.get('/health', async (req: Request, res: Response) => {
   }
 
   try {
+    const start = Date.now();
     const pong = await redis.ping();
     if (pong !== 'PONG') {
       redisStatus = 'DOWN';
       isHealthy = false;
+    } else {
+      redisLatency = Date.now() - start;
     }
   } catch (err) {
     redisStatus = 'DOWN';
@@ -258,7 +264,7 @@ app.get('/health', async (req: Request, res: Response) => {
     timestamp: new Date().toISOString(),
     services: {
       database: dbStatus,
-      redis: redisStatus,
+      redis: { status: redisStatus, latencyMs: redisLatency },
       sorobanRpc: sorobanRpcStatus,
     },
   };

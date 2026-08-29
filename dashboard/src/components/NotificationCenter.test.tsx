@@ -1,6 +1,7 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
+import { MotionGlobalConfig } from 'framer-motion';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { NotificationCenter, STREAM_PATH } from './NotificationCenter';
+import { NotificationCenter, STREAM_PATH, TOAST_DURATION_MS } from './NotificationCenter';
 
 type Handler = ((event: Event) => void) | null;
 
@@ -36,6 +37,8 @@ const historyPayload = {
 
 describe('NotificationCenter event stream reconnect', () => {
   beforeEach(() => {
+    // Resolve presence exits synchronously so unmount is observable under fake timers.
+    MotionGlobalConfig.skipAnimations = true;
     MockEventSource.instances = [];
     vi.useFakeTimers();
     vi.stubGlobal('EventSource', MockEventSource);
@@ -182,6 +185,71 @@ describe('NotificationCenter event stream reconnect', () => {
       } as MessageEvent);
     });
 
-    expect(screen.getByText('Live webhook received')).toBeTruthy();
+    expect(within(screen.getByTestId('notification-list')).getByText('Live webhook received')).toBeTruthy();
+  });
+
+  it('pops a severity-styled toast for each live notification and auto-dismisses it', async () => {
+    render(<NotificationCenter apiBaseUrl="http://localhost:3002" />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const toastContainer = screen.getByTestId('toast-container');
+    expect(toastContainer.querySelectorAll('[data-severity]')).toHaveLength(0);
+
+    act(() => {
+      MockEventSource.instances[0].onopen?.(new Event('open'));
+      MockEventSource.instances[0].onmessage?.({
+        data: JSON.stringify({
+          id: 'live-toast-1',
+          userId: 'user-1',
+          transactionId: null,
+          type: 'PUSH',
+          status: 'FAILED',
+          message: 'Withdrawal failed',
+          createdAt: new Date().toISOString(),
+        }),
+      } as MessageEvent);
+    });
+
+    const card = toastContainer.querySelector('[data-severity]');
+    expect(card?.getAttribute('data-severity')).toBe('error');
+    expect(card?.textContent).toContain('Withdrawal failed');
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(TOAST_DURATION_MS);
+    });
+
+    expect(toastContainer.querySelectorAll('[data-severity]')).toHaveLength(0);
+    // The dropdown list keeps the notification after the toast is gone.
+    expect(within(screen.getByTestId('notification-list')).getByText('Withdrawal failed')).toBeTruthy();
+  });
+
+  it('does not re-toast a notification the session has already seen', async () => {
+    render(<NotificationCenter apiBaseUrl="http://localhost:3002" />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const frame = {
+      data: JSON.stringify({
+        id: 'replayed',
+        userId: 'user-1',
+        transactionId: null,
+        type: 'EMAIL',
+        status: 'SENT',
+        message: 'Deposit settled',
+        createdAt: new Date().toISOString(),
+      }),
+    } as MessageEvent;
+
+    act(() => {
+      MockEventSource.instances[0].onmessage?.(frame);
+      MockEventSource.instances[0].onmessage?.(frame);
+    });
+
+    expect(screen.getByTestId('toast-container').querySelectorAll('[data-severity]')).toHaveLength(1);
   });
 });

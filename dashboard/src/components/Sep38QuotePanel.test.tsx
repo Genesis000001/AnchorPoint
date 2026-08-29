@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import React from 'react';
 import { Sep38QuotePanel, type Sep38Quote } from './Sep38QuotePanel';
@@ -17,8 +17,8 @@ describe('Sep38QuotePanel Component', () => {
     render(<Sep38QuotePanel />);
 
     expect(screen.getByRole('heading', { name: /SEP-38 Quote/i })).toBeInTheDocument();
-    expect(screen.getByLabelText(/Fixed/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/Indicative/i)).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /Fixed/i })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /Indicative/i })).toBeInTheDocument();
     expect(screen.getByLabelText(/You Send/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/You Receive/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Get Quote/i })).toBeInTheDocument();
@@ -61,7 +61,7 @@ describe('Sep38QuotePanel Component', () => {
     const progressbar = screen.getByRole('progressbar', { name: /Quote validity countdown/i });
     expect(progressbar).toBeInTheDocument();
     expect(progressbar).toHaveAttribute('aria-valuenow', '30');
-    expect(screen.getByText(/30s/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/30s/i).length).toBeGreaterThan(0);
   });
 
   it('updates countdown timer as time advances', async () => {
