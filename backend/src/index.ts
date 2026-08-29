@@ -45,6 +45,7 @@ import { validateStorageConfigOnStartup } from './services/storage-provider.serv
 import { uploadExpiryScheduler } from './workers/upload-expiry.scheduler';
 import { initSocket } from './lib/socket';
 import { kycExpiryScheduler } from './workers/kyc-expiry.scheduler';
+import { checkMigrationsOnStartup } from './services/migration-check.service';
 
 let server: ReturnType<typeof app.listen> | null = null;
 
@@ -358,6 +359,8 @@ app.use(errorHandler);
 /* istanbul ignore next */
 if (process.env.NODE_ENV !== 'test') {
   (async () => {
+    await checkMigrationsOnStartup();
+
     validateKmsConfigOnStartup(config);
     await hydrateEncryptedConfigSecrets();
     const decryptionOk = await verifyDecryptionCapabilityOnStartup({
@@ -370,28 +373,13 @@ if (process.env.NODE_ENV !== 'test') {
       RELAYER_SECRET_KEY: process.env.RELAYER_SECRET_KEY,
       WEBHOOK_SECRET: process.env.WEBHOOK_SECRET,
       SIGNING_KEY: process.env.SIGNING_KEY,
-  validateKmsConfigOnStartup(config);
-  validateStorageConfigOnStartup();
-
-  configService.initialize()
-    .catch((error) => {
-      logger.error('Failed to initialize config service:', error);
-    })
-    .finally(() => {
-      initSocket(httpServer);
-      httpServer.listen(PORT, () => {
-      server = app.listen(PORT, () => {
-        logger.info(`Backend service listening at http://localhost:${PORT}`);
-        logger.info(`API Documentation available at http://localhost:${PORT}/api-docs`);
-        feeReportScheduler.start();
-        uploadExpiryScheduler.start();
-        kycExpiryScheduler.start();
-      });
     });
+
     if (!decryptionOk && config.NODE_ENV === 'production') {
       logger.error('Aborting startup: encrypted config secrets could not be decrypted');
       process.exit(1);
     }
+
     validateStorageConfigOnStartup();
 
     configService.initialize()
@@ -399,11 +387,13 @@ if (process.env.NODE_ENV !== 'test') {
         logger.error('Failed to initialize config service:', error);
       })
       .finally(() => {
-        app.listen(PORT, () => {
+        initSocket(httpServer);
+        server = httpServer.listen(PORT, () => {
           logger.info(`Backend service listening at http://localhost:${PORT}`);
           logger.info(`API Documentation available at http://localhost:${PORT}/api-docs`);
           feeReportScheduler.start();
           uploadExpiryScheduler.start();
+          kycExpiryScheduler.start();
         });
       });
   })().catch((error) => {

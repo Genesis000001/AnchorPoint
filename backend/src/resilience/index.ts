@@ -4,6 +4,7 @@
 export * from './circuit-breaker.factory';
 export * from './breaker-registry';
 export * from './horizon.proxy';
+export * from './soroban.proxy';
 export * from './redis.proxy';
 export * from './third-party.proxy';
 export * from './telemetry';
