@@ -20,14 +20,11 @@ build/
 coverage/
 
 # Environment
-.env
-.env.*
 !.env.example
 *.local
 
 # Editor/System
 .codex
-.vscode/*
 !.vscode/extensions.json
 .idea/
 .DS_Store
@@ -40,3 +37,7 @@ coverage/
 # Testing
 test_snapshots/
 **/test_snapshots/
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
+config.bat
