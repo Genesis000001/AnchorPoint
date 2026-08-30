@@ -60,7 +60,8 @@ describe('EventLogViewer decoding', () => {
   it('decodes a full ContractEvent envelope including its contract id', () => {
     const raw = new xdr.ContractEvent({
       ext: new xdr.ExtensionPoint(0),
-      contractId: Buffer.alloc(32, 7),
+      // The SDK declares byte fields as `Opaque[]` (its own "workaround" alias) while producing and consuming Buffers at runtime
+    contractId: Buffer.alloc(32, 7) as any,
       type: xdr.ContractEventType.contract(),
       body: new xdr.ContractEventBody(
         0,

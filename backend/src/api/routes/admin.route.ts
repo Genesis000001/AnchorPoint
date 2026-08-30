@@ -1,5 +1,13 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
+import { validate } from '../middleware/validate.middleware';
+import {
+  switchNetworkSchema,
+  patchTransactionSchema,
+  passwordResetRequestSchema,
+  passwordResetConfirmSchema,
+  purgeCacheSchema,
+} from './admin.schemas';
 import { stellarService } from '../../services/stellar.service';
 import { NetworkType } from '../../config/networks';
 import { SEP31Service } from '../../services/sep31.service';
@@ -17,21 +25,6 @@ import adminAuditService, {
 
 const router = Router();
 const adminPasswordResetService = new AdminPasswordResetService();
-
-const passwordResetRequestSchema = z.object({
-  email: z.string().email(),
-});
-
-const passwordResetConfirmSchema = z.object({
-  token: z.string().min(32),
-  newPassword: z
-    .string()
-    .min(12, 'Password must be at least 12 characters')
-    .max(128, 'Password must be at most 128 characters')
-    .regex(/[a-z]/, 'Password must include a lowercase letter')
-    .regex(/[A-Z]/, 'Password must include an uppercase letter')
-    .regex(/[0-9]/, 'Password must include a number'),
-});
 
 // Singleton service instance
 const sep31Service = new SEP31Service(createCallbackNotifier());
@@ -82,12 +75,8 @@ router.get('/network', (req: Request, res: Response) => {
  *       400:
  *         description: Invalid network type
  */
-router.post('/network', async (req: Request, res: Response) => {
+router.post('/network', validate({ body: switchNetworkSchema }), async (req: Request, res: Response) => {
   const { network } = req.body;
-
-  if (!Object.values(NetworkType).includes(network)) {
-    return res.status(400).json({ error: 'Invalid network type' });
-  }
 
   try {
     const previousNetwork = stellarService.getNetwork();
@@ -140,7 +129,7 @@ router.post('/network', async (req: Request, res: Response) => {
  *       200:
  *         description: Transaction status updated successfully
  */
-router.patch('/transactions/:id', async (req: Request, res: Response) => {
+router.patch('/transactions/:id', validate({ body: patchTransactionSchema }), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { status, stellar_transaction_id, external_transaction_id, amount_out, amount_fee } = req.body;
@@ -189,21 +178,12 @@ router.patch('/transactions/:id', async (req: Request, res: Response) => {
  *       400:
  *         description: Invalid payload
  */
-router.post('/password-reset/request', async (req: Request, res: Response) => {
-  const parsed = passwordResetRequestSchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({
-      status: 'error',
-      message: parsed.error.issues[0]?.message ?? 'Invalid request body',
-    });
-  }
-
+router.post('/password-reset/request', validate({ body: passwordResetRequestSchema }), async (req: Request, res: Response) => {
   try {
-    await adminPasswordResetService.requestPasswordReset(parsed.data.email);
+    await adminPasswordResetService.requestPasswordReset(req.body.email);
     return res.json({
       status: 'success',
-      message:
-        'If an account exists for that email, a password reset link has been sent.',
+      message: 'If an account exists for that email, a password reset link has been sent.',
     });
   } catch (error: any) {
     logger.error('Failed to request password reset', {
@@ -243,19 +223,11 @@ router.post('/password-reset/request', async (req: Request, res: Response) => {
  *       400:
  *         description: Invalid token or payload
  */
-router.post('/password-reset/confirm', async (req: Request, res: Response) => {
-  const parsed = passwordResetConfirmSchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({
-      status: 'error',
-      message: parsed.error.issues[0]?.message ?? 'Invalid request body',
-    });
-  }
-
+router.post('/password-reset/confirm', validate({ body: passwordResetConfirmSchema }), async (req: Request, res: Response) => {
   try {
     await adminPasswordResetService.confirmPasswordReset(
-      parsed.data.token,
-      parsed.data.newPassword
+      req.body.token,
+      req.body.newPassword
     );
 
     await adminAuditService.recordConfigChange({
@@ -396,7 +368,7 @@ const purgeTomlCacheSchema = z.object({
  *                   type: integer
  *                   description: Number of cache entries removed
  */
-router.post('/cache/purge-toml', async (req: Request, res: Response) => {
+router.post('/cache/purge-toml', validate({ body: purgeCacheSchema }), async (req: Request, res: Response) => {
   const parsed = purgeTomlCacheSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({
