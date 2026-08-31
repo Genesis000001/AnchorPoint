@@ -128,7 +128,18 @@ export class SEP31Service {
       );
     }
 
-    // 5. Persist
+    // 5. Calculate dynamic fee using FeeService
+    let feeAmount: string | null = null;
+    try {
+      const { FeeService } = require('./fee.service');
+      const feeService = new FeeService();
+      const feeResult = feeService.calculateAssetFee(assetCode, numericAmount);
+      feeAmount = feeResult.feeAmount.toFixed(7);
+    } catch {
+      // Fee calculation is non-critical; proceed without fee
+    }
+
+    // 6. Persist
     const id = randomUUID();
 
     // We need a userId for the relation
@@ -148,6 +159,7 @@ export class SEP31Service {
         userId: systemUser.id,
         assetCode: assetCode.toUpperCase(),
         amount,
+        feeAmount,
         type: "SEP31",
         status: "pending_sender",
         sep31Status: "pending_sender",

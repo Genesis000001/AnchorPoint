@@ -1,16 +1,23 @@
-import { useState, useId } from 'react';
-import type { FormEvent } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
+import { useForm } from 'react-hook-form';
+import type { FieldErrors } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { z } from 'zod';
 import { AlertCircle, CheckCircle2 } from 'lucide-react';
 import type { FieldRequirement } from '../types';
 import type { DepositError } from './DepositErrorAlert';
 import { DepositErrorAlert } from './DepositErrorAlert';
 
-interface FormValues {
+export interface FormValues {
   [key: string]: string;
 }
 
-interface FieldError {
-  [key: string]: string;
+/** Per-asset deposit bounds. Amounts outside these never reach the backend. */
+export interface AssetLimits {
+  min: number;
+  max: number;
+  /** Maximum fractional digits the asset accepts. */
+  decimals: number;
 }
 
 interface DepositFormProps {
@@ -18,13 +25,37 @@ interface DepositFormProps {
   fields: FieldRequirement[];
   /** Asset code being deposited (e.g., 'USDC') */
   assetCode: string;
+  /** Overrides the limits looked up from `assetCode`. */
+  assetLimits?: AssetLimits;
   /** Called with validated form values when the user submits */
   onSubmit: (values: FormValues) => void;
 }
 
-const AMOUNT_PATTERN = /^\d+(\.\d{1,2})?$/;
+/** SEP-24 alphanumeric asset codes are 1–12 uppercase alphanumeric characters. */
+export const ASSET_CODE_PATTERN = /^[A-Z0-9]{1,12}$/;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const WALLET_PATTERN = /^G[A-Z0-9]{55}$/;
+
+export const DEFAULT_ASSET_LIMITS: AssetLimits = { min: 10, max: 100_000, decimals: 2 };
+
+/**
+ * Bounds per asset. Minimums differ by an order of magnitude across corridors,
+ * so a single hardcoded floor either blocks valid ARST deposits or lets
+ * dust-sized USDC deposits through.
+ */
+export const ASSET_LIMITS: Record<string, AssetLimits> = {
+  USDC: { min: 10, max: 100_000, decimals: 2 },
+  EURT: { min: 10, max: 100_000, decimals: 2 },
+  ARST: { min: 5_000, max: 50_000_000, decimals: 2 },
+};
+
+export function isValidAssetCode(assetCode: string): boolean {
+  return ASSET_CODE_PATTERN.test(assetCode);
+}
+
+export function getAssetLimits(assetCode: string): AssetLimits {
+  return ASSET_LIMITS[assetCode] ?? DEFAULT_ASSET_LIMITS;
+}
 
 const getFieldType = (key: string): React.HTMLInputTypeAttribute => {
   if (key.toLowerCase().includes('amount')) return 'number';
@@ -32,7 +63,24 @@ const getFieldType = (key: string): React.HTMLInputTypeAttribute => {
   return 'text';
 };
 
-const validateField = (field: FieldRequirement, value: string): string => {
+const formatAmount = (value: number, decimals: number) =>
+  value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: decimals });
+
+/** Builds the decimal-digit pattern for an asset, e.g. 2 → /^\d+(\.\d{1,2})?$/ */
+export function amountPattern(decimals: number): RegExp {
+  return decimals > 0 ? new RegExp(`^\\d+(\\.\\d{1,${decimals}})?$`) : /^\d+$/;
+}
+
+/**
+ * Single source of truth for field rules, shared by the Zod schema and by
+ * tests. Returns an empty string when the value is acceptable.
+ */
+export function validateField(
+  field: FieldRequirement,
+  value: string,
+  assetCode: string,
+  limits: AssetLimits,
+): string {
   const trimmed = value.trim();
 
   if (field.required && !trimmed) {
@@ -44,111 +92,139 @@ const validateField = (field: FieldRequirement, value: string): string => {
   const key = field.key.toLowerCase();
 
   if (key.includes('amount')) {
-    if (!AMOUNT_PATTERN.test(trimmed)) {
-      return 'Enter a valid amount (e.g. 120.50).';
+    if (!amountPattern(limits.decimals).test(trimmed)) {
+      return limits.decimals > 0
+        ? `Enter a valid amount with up to ${limits.decimals} decimal place${
+            limits.decimals === 1 ? '' : 's'
+          }.`
+        : 'Enter a whole number amount.';
     }
-    const num = parseFloat(trimmed);
-    if (num <= 0) return 'Deposit amount must be greater than zero.';
-    if (num < 10) return 'Minimum deposit amount is $10.';
-    if (num > 100_000) return 'Deposit amount exceeds the maximum single-transaction limit.';
+
+    const amount = Number.parseFloat(trimmed);
+    if (amount <= 0) return 'Deposit amount must be greater than zero.';
+    if (amount < limits.min) {
+      return `Minimum ${assetCode} deposit is ${formatAmount(limits.min, limits.decimals)}.`;
+    }
+    if (amount > limits.max) {
+      return `Maximum ${assetCode} deposit is ${formatAmount(limits.max, limits.decimals)}.`;
+    }
   }
 
-  if (key.includes('email')) {
-    if (!EMAIL_PATTERN.test(trimmed)) {
-      return 'Enter a valid email address.';
-    }
+  if (key.includes('email') && !EMAIL_PATTERN.test(trimmed)) {
+    return 'Enter a valid email address.';
   }
 
-  if (key.includes('wallet') || key.includes('address')) {
-    if (!WALLET_PATTERN.test(trimmed)) {
-      return 'Enter a valid Stellar wallet address starting with G.';
-    }
+  if ((key.includes('wallet') || key.includes('address')) && !WALLET_PATTERN.test(trimmed)) {
+    return 'Enter a valid Stellar wallet address starting with G.';
+  }
+
+  if (key.includes('asset') && !isValidAssetCode(trimmed)) {
+    return 'Enter a valid asset code (1-12 uppercase letters or digits).';
   }
 
   return '';
-};
+}
 
-const validateAll = (fields: FieldRequirement[], values: FormValues): FieldError => {
-  const errors: FieldError = {};
-  for (const field of fields) {
-    const err = validateField(field, values[field.key] ?? '');
-    if (err) errors[field.key] = err;
-  }
-  return errors;
-};
-
-export const DepositForm = ({ fields, assetCode, onSubmit }: DepositFormProps) => {
-  const formId = useId();
-  const [values, setValues] = useState<FormValues>(() =>
-    Object.fromEntries(fields.map((f) => [f.key, ''])),
+/**
+ * Zod schema for one deposit form. Rebuilt whenever the field set, asset or
+ * limits change so the bounds enforced always match the asset on screen.
+ */
+export function buildDepositSchema(
+  fields: FieldRequirement[],
+  assetCode: string,
+  limits: AssetLimits,
+) {
+  const shape = Object.fromEntries(
+    fields.map((field) => [
+      field.key,
+      z.string().superRefine((value, ctx) => {
+        const message = validateField(field, value ?? '', assetCode, limits);
+        if (message) {
+          ctx.addIssue({ code: 'custom', message });
+        }
+      }),
+    ]),
   );
-  const [errors, setErrors] = useState<FieldError>({});
-  const [touched, setTouched] = useState<Record<string, boolean>>({});
-  const [submitted, setSubmitted] = useState(false);
+
+  return z.object(shape);
+}
+
+export const DepositForm = ({
+  fields,
+  assetCode,
+  assetLimits,
+  onSubmit,
+}: DepositFormProps) => {
+  const formId = useId();
   const [formError, setFormError] = useState<DepositError | null>(null);
 
-  const handleChange = (key: string, value: string) => {
-    setValues((prev) => ({ ...prev, [key]: value }));
-    // Clear form-level error when user starts correcting
-    if (formError) setFormError(null);
+  const limits = useMemo(
+    () => assetLimits ?? getAssetLimits(assetCode),
+    [assetLimits, assetCode],
+  );
+  const schema = useMemo(
+    () => buildDepositSchema(fields, assetCode, limits),
+    [fields, assetCode, limits],
+  );
+  const defaultValues = useMemo(
+    () => Object.fromEntries(fields.map((field) => [field.key, ''])) as FormValues,
+    [fields],
+  );
 
-    if (touched[key]) {
-      const field = fields.find((f) => f.key === key)!;
-      const err = validateField(field, value);
-      setErrors((prev) => ({ ...prev, [key]: err }));
-    }
+  const {
+    register,
+    handleSubmit,
+    watch,
+    reset,
+    formState: { errors, touchedFields, isSubmitted },
+  } = useForm<FormValues>({
+    resolver: zodResolver(schema),
+    mode: 'onBlur',
+    reValidateMode: 'onChange',
+    defaultValues,
+  });
+
+  // A different asset means different bounds, so previous entries are no
+  // longer known-good and the form starts clean.
+  useEffect(() => {
+    reset(defaultValues);
+    setFormError(null);
+  }, [defaultValues, reset]);
+
+  const values = watch();
+  const errorCount = Object.keys(errors).length;
+  const hasErrors = errorCount > 0;
+
+  const handleValid = (submitted: FormValues) => {
+    setFormError(null);
+    onSubmit(submitted);
   };
 
-  const handleBlur = (key: string) => {
-    setTouched((prev) => ({ ...prev, [key]: true }));
-    const field = fields.find((f) => f.key === key)!;
-    const err = validateField(field, values[key] ?? '');
-    setErrors((prev) => ({ ...prev, [key]: err }));
+  // RHF hands the fresh error map to this callback; the `errors` captured from
+  // formState is still the previous render's and would undercount.
+  const handleInvalid = (submitErrors: FieldErrors<FormValues>) => {
+    const count = Object.keys(submitErrors).length || 1;
+    setFormError({
+      type: 'validation',
+      title: 'Unable to Process Deposit',
+      message: `Please fix ${count} validation error${count !== 1 ? 's' : ''} before continuing.`,
+      details: 'Review the highlighted fields below for specific issues.',
+      retryable: false,
+    });
   };
-
-  const handleSubmit = (e: FormEvent) => {
-    e.preventDefault();
-    setSubmitted(true);
-    const allTouched = Object.fromEntries(fields.map((f) => [f.key, true]));
-    setTouched(allTouched);
-
-    const allErrors = validateAll(fields, values);
-    setErrors(allErrors);
-
-    if (Object.keys(allErrors).length === 0) {
-      onSubmit(values);
-    } else {
-      // Set form-level error for failed submission
-      const errorCount = Object.values(allErrors).length;
-      setFormError({
-        type: 'validation',
-        title: 'Unable to Process Deposit',
-        message: `Please fix ${errorCount} validation error${errorCount !== 1 ? 's' : ''} before continuing.`,
-        details: 'Review the highlighted fields below for specific issues.',
-        retryable: false,
-      });
-    }
-  };
-
-  const hasErrors = Object.values(errors).some(Boolean);
-  const errorCount = Object.values(errors).filter(Boolean).length;
 
   return (
     <form
-      onSubmit={handleSubmit}
+      onSubmit={handleSubmit(handleValid, handleInvalid)}
       noValidate
       aria-label={`Deposit ${assetCode} details form`}
       className="space-y-5"
     >
       {/* Form-level error alert from submission or network failures */}
-      <DepositErrorAlert
-        error={formError}
-        onDismiss={() => setFormError(null)}
-        dismissible={true}
-      />
+      <DepositErrorAlert error={formError} onDismiss={() => setFormError(null)} dismissible />
 
       {/* Summary error alert shown after first submit attempt with field errors */}
-      {submitted && hasErrors && !formError && (
+      {isSubmitted && hasErrors && !formError && (
         <div
           role="alert"
           aria-live="assertive"
@@ -165,8 +241,9 @@ export const DepositForm = ({ fields, assetCode, onSubmit }: DepositFormProps) =
         const inputId = `${formId}-${field.key}`;
         const errorId = `${formId}-${field.key}-error`;
         const hintId = field.helpText ? `${formId}-${field.key}-hint` : undefined;
-        const err = errors[field.key];
-        const isInvalid = touched[field.key] && Boolean(err);
+        const message = errors[field.key]?.message as string | undefined;
+        const isInvalid = Boolean(message);
+        const isTouched = Boolean(touchedFields[field.key]);
 
         return (
           <div key={field.key} className="space-y-1.5">
@@ -196,25 +273,20 @@ export const DepositForm = ({ fields, assetCode, onSubmit }: DepositFormProps) =
               <input
                 id={inputId}
                 type={getFieldType(field.key)}
-                value={values[field.key] ?? ''}
-                onChange={(e) => handleChange(field.key, e.target.value)}
-                onBlur={() => handleBlur(field.key)}
                 placeholder={field.placeholder}
-                required={field.required}
                 aria-required={field.required}
                 aria-invalid={isInvalid}
-                aria-describedby={
-                  [errorId, hintId].filter(Boolean).join(' ') || undefined
-                }
+                aria-describedby={[errorId, hintId].filter(Boolean).join(' ') || undefined}
+                {...register(field.key)}
                 className={`input-field w-full pr-9 text-sm transition-all ${
                   isInvalid
                     ? 'border-rose-500/60 focus:ring-rose-500/40'
-                    : touched[field.key] && !err
+                    : isTouched
                     ? 'border-emerald-500/40 focus:ring-emerald-500/30'
                     : ''
                 }`}
               />
-              {touched[field.key] && !err && values[field.key] && (
+              {isTouched && !isInvalid && values[field.key] && (
                 <CheckCircle2
                   size={15}
                   className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-emerald-400"
@@ -231,9 +303,13 @@ export const DepositForm = ({ fields, assetCode, onSubmit }: DepositFormProps) =
             </div>
 
             {isInvalid && (
-              <p id={errorId} role="alert" className="flex items-center gap-1.5 text-xs text-rose-400">
+              <p
+                id={errorId}
+                role="alert"
+                className="flex items-center gap-1.5 text-xs text-rose-400"
+              >
                 <AlertCircle size={11} aria-hidden="true" />
-                {err}
+                {message}
               </p>
             )}
           </div>
