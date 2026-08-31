@@ -1,6 +1,10 @@
 #![no_std]
 
 use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, String, Vec, IntoVal, Map, Symbol
+};
+
+use reentrancy_guard::ReentrancyGuard;
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token, Address, Env, String, Vec, IntoVal, Map, Symbol
 };
 
@@ -21,10 +25,23 @@ pub enum Error {
     RewardsOverflow = 11,
     AdminNotFound = 12,
     OnlyAdmin = 13,
+    MetadataUriTooLong = 14,
 }
 
 
 const PRECISION: i128 = 1_000_000_000_000_000_000;
+
+/// Basis points denominator (10_000 = 100%).
+const MAX_BPS: i128 = 10_000;
+
+/// Default emergency-withdraw penalty in basis points (10% = 1_000 bps).
+const DEFAULT_EMERGENCY_FEE_BPS: i128 = 1_000;
+
+/// Maximum length, in bytes, of any metadata URI or description string.
+///
+/// Bounds the storage rental a single metadata update can commit the
+/// contract to, and keeps values within a size integrators can handle.
+const MAX_METADATA_LEN: u32 = 256;
 
 #[contracttype]
 pub enum DataKey {
@@ -45,6 +62,16 @@ pub enum DataKey {
     /// Ledger-sequence checkpoint of RewardPerTokenStored.
     /// Allows querying the accumulator value at past reward distributions.
     RewardPerTokenCheckpoint(u32),
+    /// Emergency-withdraw fee in basis points (default DEFAULT_EMERGENCY_FEE_BPS).
+    EmergencyFeeBps,
+}
+
+/// Contract-level errors.
+#[contracterror]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Error {
+    /// A recursive (re-entrant) call was detected on a guarded function.
+    ReentrancyDetected = 1,
 }
 
 /// On-chain branding metadata for the contract.
@@ -110,6 +137,8 @@ impl LiquidStaking {
             website: String::from_str(&env, ""),
         });
         env.storage().instance().set(&DataKey::Paused, &false);
+        // Initialise the emergency fee penalty to the default (10%).
+        env.storage().instance().set(&DataKey::EmergencyFeeBps, &DEFAULT_EMERGENCY_FEE_BPS);
     }
 
     pub fn deposit_rewards(env: Env, from: Address, amount: i128) {
@@ -237,6 +266,7 @@ impl LiquidStaking {
         env.storage().instance().set(&DataKey::TotalStaked, &total.checked_add(amount).unwrap_or_else(|| panic_with_error!(env, Error::TotalStakedOverflow)));
 
         // Topic: event name only; user + token_id + amount + lock_time in data.
+        env.events().publish((symbol_short!("staked"), user, token_id), (amount, lock_time));
         env.events().publish((symbol_short!("staked"),), (user, token_id, amount, lock_time));
         
         token_id
@@ -244,6 +274,13 @@ impl LiquidStaking {
 
     pub fn unstake(env: Env, user: Address, token_id: u64) {
         user.require_auth();
+
+        // Acquire the reentrancy guard. Any recursive call into a guarded function
+        // while this is held reverts with `ReentrancyDetected`.
+        let _guard = ReentrancyGuard::new(&env)
+            .map_err(|_| Error::ReentrancyDetected)
+            .unwrap();
+
         Self::_check_not_paused(&env);
         let nft_contract: Address = env.storage().instance().get(&DataKey::NftContract).unwrap();
         let owner: Address = env.invoke_contract(
@@ -265,9 +302,29 @@ impl LiquidStaking {
             panic_with_error!(env, Error::NoStakeFound);
         }
 
+        // Snapshot accrued rewards (this only updates internal state, no transfer).
         Self::_update_reward(&env, token_id);
-
         let reward: i128 = env.storage().persistent().get(&DataKey::NftRewards(token_id)).unwrap_or(0);
+        // Clear the accrued reward record up-front so a re-entrant call cannot
+        // claim the same reward twice.
+        if reward > 0 {
+            env.storage().persistent().set(&DataKey::NftRewards(token_id), &0_i128);
+        }
+
+        // ── Checks-Effects-Interactions ──────────────────────────────────────
+        // Effects: update all internal user/contract state BEFORE performing any
+        // cross-contract token transfer.
+        let total: i128 = env.storage().instance().get(&DataKey::TotalStaked).unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalStaked, &total.checked_sub(amount).expect("total staked underflow"));
+
+        env.storage().persistent().remove(&DataKey::StakeAmount(token_id));
+        env.storage().persistent().remove(&DataKey::StakeLockTime(token_id));
+        env.storage().persistent().remove(&DataKey::NftRewardPerTokenPaid(token_id));
+        env.storage().persistent().remove(&DataKey::NftRewards(token_id));
+
+        // Interactions: external token transfers happen only after state is settled.
         if reward > 0 {
             let reward_token: Address = env.storage().instance().get(&DataKey::RewardToken).unwrap();
             token::Client::new(&env, &reward_token).transfer(
@@ -287,11 +344,6 @@ impl LiquidStaking {
             &amount,
         );
 
-        env.storage().persistent().remove(&DataKey::StakeAmount(token_id));
-        env.storage().persistent().remove(&DataKey::StakeLockTime(token_id));
-        env.storage().persistent().remove(&DataKey::NftRewardPerTokenPaid(token_id));
-        env.storage().persistent().remove(&DataKey::NftRewards(token_id));
-
         // Burn the NFT
         env.invoke_contract::<()>(
             &nft_contract,
@@ -300,12 +352,18 @@ impl LiquidStaking {
         );
 
         // Topic: event name only; user + token_id + amount in data.
+        env.events().publish((symbol_short!("unstaked"), user, token_id), amount);
         env.events().publish((symbol_short!("unstaked"),), (user, token_id, amount));
     }
 
     // ── Emergency Withdraw ─────────────────────────────────────────────────
 
     /// Withdraw entire stake directly when contract is paused, without reward updates.
+    ///
+    /// A fee penalty (`emergency_fee_bps` basis points, default 10%) is deducted
+    /// from the staked amount and sent to the admin (treasury). The net amount is
+    /// returned to the user. Both the net amount and the fee are included in the
+    /// emitted event for a complete audit trail.
     pub fn emergency_withdraw(env: Env, user: Address, token_id: u64) {
         user.require_auth();
         assert!(Self::is_paused(env.clone()), "contract not paused");
@@ -323,16 +381,47 @@ impl LiquidStaking {
         let amount: i128 = env.storage().persistent().get(&DataKey::StakeAmount(token_id)).unwrap_or(0);
         assert!(amount > 0, "no stake found for token");
 
-        // Update storage
+        // Calculate fee penalty and net withdrawal amount.
+        let fee_bps: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::EmergencyFeeBps)
+            .unwrap_or(DEFAULT_EMERGENCY_FEE_BPS);
+        let fee_penalty: i128 = amount
+            .checked_mul(fee_bps)
+            .unwrap_or_else(|| panic_with_error!(env, Error::RewardsOverflow))
+            / MAX_BPS;
+        let net_amount: i128 = amount
+            .checked_sub(fee_penalty)
+            .unwrap_or_else(|| panic_with_error!(env, Error::TotalStakedUnderflow));
+
+        // Update total staked
         let total: i128 = env.storage().instance().get(&DataKey::TotalStaked).unwrap_or(0);
         env.storage().instance().set(&DataKey::TotalStaked, &total.checked_sub(amount).expect("total staked underflow"));
 
         let stake_token: Address = env.storage().instance().get(&DataKey::StakeToken).unwrap();
-        token::Client::new(&env, &stake_token).transfer(
+        let token_client = token::Client::new(&env, &stake_token);
+
+        // Transfer net amount to user.
+        token_client.transfer(
             &env.current_contract_address(),
             &user,
-            &amount,
+            &net_amount,
         );
+
+        // Transfer fee penalty to admin (treasury).
+        if fee_penalty > 0 {
+            let admin: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::Admin)
+                .unwrap_or_else(|| panic_with_error!(env, Error::AdminNotFound));
+            token_client.transfer(
+                &env.current_contract_address(),
+                &admin,
+                &fee_penalty,
+            );
+        }
 
         env.storage().persistent().remove(&DataKey::StakeAmount(token_id));
         env.storage().persistent().remove(&DataKey::StakeLockTime(token_id));
@@ -346,12 +435,50 @@ impl LiquidStaking {
             (env.current_contract_address(), token_id).into_val(&env),
         );
 
-        env.events().publish((symbol_short!("emer_wd"),), (user, token_id, amount));
+        // Emit event including fee_penalty so callers can audit the deduction.
+        env.events().publish(
+            (symbol_short!("emer_wd"),),
+            (user, token_id, net_amount, fee_penalty),
+        );
+    }
+
+    /// Update the emergency-withdraw penalty fee (admin only).
+    ///
+    /// # Arguments
+    /// * `caller`   – Must be the contract admin
+    /// * `fee_bps`  – New fee in basis points (0–10_000)
+    pub fn set_emergency_fee(env: Env, caller: Address, fee_bps: i128) {
+        caller.require_auth();
+
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error!(env, Error::AdminNotFound));
+        if caller != admin {
+            panic_with_error!(env, Error::OnlyAdmin);
+        }
+        assert!(fee_bps >= 0 && fee_bps <= MAX_BPS, "fee_bps out of range");
+
+        env.storage().instance().set(&DataKey::EmergencyFeeBps, &fee_bps);
+    }
+
+    /// Return the current emergency-withdraw fee in basis points.
+    pub fn get_emergency_fee(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::EmergencyFeeBps)
+            .unwrap_or(DEFAULT_EMERGENCY_FEE_BPS)
     }
 
     pub fn claim(env: Env, user: Address, token_id: u64) -> i128 {
         user.require_auth();
         Self::_check_not_paused(&env);
+
+        // Acquire the reentrancy guard.
+        let _guard = ReentrancyGuard::new(&env)
+            .map_err(|_| Error::ReentrancyDetected)
+            .unwrap();
 
         let nft_contract: Address = env.storage().instance().get(&DataKey::NftContract).unwrap();
         let owner: Address = env.invoke_contract(
@@ -378,6 +505,7 @@ impl LiquidStaking {
             );
 
             // Topic: event name only; user + token_id + reward in data.
+            env.events().publish((symbol_short!("claimed"), user, token_id), reward);
             env.events().publish((symbol_short!("claimed"),), (user, token_id, reward));
         }
 
@@ -472,6 +600,10 @@ impl LiquidStaking {
     /// * `description` – New human-readable description
     /// * `icon_url`    – New icon / logo URL
     /// * `website`     – New project website URL
+    /// Update the contract branding metadata.
+    ///
+    /// Admin only. Every field is length-bounded to MAX_METADATA_LEN bytes so
+    /// a single update cannot commit the contract to unbounded storage rental.
     pub fn update_contract_meta(
         env: Env,
         caller: Address,
@@ -490,10 +622,27 @@ impl LiquidStaking {
             panic_with_error!(env, Error::OnlyAdmin);
         }
 
-        let meta = ContractMetadata { description, icon_url, website };
+        if description.len() > MAX_METADATA_LEN
+            || icon_url.len() > MAX_METADATA_LEN
+            || website.len() > MAX_METADATA_LEN
+        {
+            panic_with_error!(env, Error::MetadataUriTooLong);
+        }
+
+        let meta = ContractMetadata {
+            description,
+            icon_url,
+            website,
+        };
         env.storage().instance().set(&DataKey::ContractMeta, &meta);
 
-        env.events().publish((symbol_short!("meta_upd"),), meta);
+        // Topic: event name; data: the new icon URI followed by the full
+        // metadata. The URI leads so subscribers get MetadataUpdated(new_uri)
+        // directly, while existing consumers of the whole struct still work.
+        env.events().publish(
+            (symbol_short!("meta_upd"),),
+            (meta.icon_url.clone(), meta),
+        );
     }
 
     /// Return the current contract branding metadata.
@@ -599,9 +748,9 @@ fn u64_to_string(env: &Env, mut n: u64) -> String {
 mod tests {
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as _, Ledger},
+        testutils::{Address as _, Events, Ledger},
         token::{Client as TokenClient, StellarAssetClient},
-        Address, Env, String,
+        Address, Env, IntoVal, String,
     };
     
     // Using the imported Rust crate directly for tests
@@ -790,17 +939,73 @@ mod tests {
         client.pause(&admin);
         assert!(client.is_paused());
 
-        // Try emergency withdraw - should work
+        // Try emergency withdraw - should work, with 10% fee penalty
         client.emergency_withdraw(&alice, &token_id);
         // Check stake is gone
         let after_info = client.get_stake_info(&token_id);
         assert_eq!(after_info.amount, 0);
-        // Check tokens returned
-        assert_eq!(token_client.balance(&alice), 1_000_000);
+        // Net amount returned = 500_000 - 10% = 450_000; fee = 50_000 goes to admin
+        assert_eq!(token_client.balance(&alice), 1_000_000 - 500_000 + 450_000); // 950_000
+        assert_eq!(token_client.balance(&admin), 50_000);
 
         // Unpause
         client.unpause(&admin);
         assert!(!client.is_paused());
+    }
+
+    // ── Emergency withdraw event emission tests (Issue #1000) ────────────
+
+    #[test]
+    fn test_emergency_withdraw_emits_event_with_fee_penalty() {
+        let (env, ls_id, _, admin, alice, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        let token_id = client.stake(&alice, &500_000, &3600);
+
+        // Pause and emergency withdraw
+        client.pause(&admin);
+
+        let events_before = env.events().all().len();
+        client.emergency_withdraw(&alice, &token_id);
+        let events_after = env.events().all().len();
+
+        // At least one new event must have been emitted
+        assert!(events_after > events_before, "emergency_withdraw must emit an event");
+
+        // Verify fee accounting: 10% fee on 500_000 = 50_000 penalty; net = 450_000
+        let stake_token = env.as_contract(&ls_id, || {
+            env.storage().instance().get(&DataKey::StakeToken).unwrap()
+        });
+        let token_client = TokenClient::new(&env, &stake_token);
+        // alice started with 1_000_000, staked 500_000, gets back net 450_000
+        assert_eq!(token_client.balance(&alice), 950_000, "net amount should be 90% of staked");
+        // admin receives the 10% fee penalty
+        assert_eq!(token_client.balance(&admin), 50_000, "admin should receive fee penalty");
+    }
+
+    #[test]
+    fn test_set_emergency_fee_and_withdraw() {
+        let (env, ls_id, _, admin, alice, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        // Default fee is 10% (1000 bps)
+        assert_eq!(client.get_emergency_fee(), 1_000);
+
+        // Admin changes fee to 5% (500 bps)
+        client.set_emergency_fee(&admin, &500);
+        assert_eq!(client.get_emergency_fee(), 500);
+
+        let token_id = client.stake(&alice, &500_000, &3600);
+        client.pause(&admin);
+        client.emergency_withdraw(&alice, &token_id);
+
+        let stake_token = env.as_contract(&ls_id, || {
+            env.storage().instance().get(&DataKey::StakeToken).unwrap()
+        });
+        let token_client = TokenClient::new(&env, &stake_token);
+        // Net = 500_000 - 5% = 475_000; fee = 25_000
+        assert_eq!(token_client.balance(&alice), 975_000); // 1_000_000 - 500_000 + 475_000
+        assert_eq!(token_client.balance(&admin), 25_000);
     }
 
     #[test]
@@ -928,6 +1133,170 @@ mod tests {
         assert_eq!(reward_client.balance(&bob), 4_000);
     }
 
+
+    // -- Metadata update authorization & validation ---------------------------
+
+    /// Build a String of exactly `n` ASCII bytes.
+    fn string_of_len(env: &Env, n: usize) -> String {
+        let filler = "a".repeat(n);
+        String::from_str(env, &filler)
+    }
+
+    #[test]
+    #[should_panic(expected = "HostError: Error(Contract, #13)")]
+    fn test_metadata_update_rejects_unauthorized_caller() {
+        let (env, ls_id, _, _, alice, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        // A staker is not the admin and must not be able to rebrand the
+        // contract.
+        client.update_contract_meta(
+            &alice,
+            &String::from_str(&env, "hijacked"),
+            &String::from_str(&env, "https://evil.example/icon.png"),
+            &String::from_str(&env, "https://evil.example"),
+        );
+    }
+
+    #[test]
+    fn test_metadata_update_rejected_caller_leaves_state_untouched() {
+        let (env, ls_id, _, admin, alice, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        client.update_contract_meta(
+            &admin,
+            &String::from_str(&env, "official"),
+            &String::from_str(&env, "https://example.com/icon.png"),
+            &String::from_str(&env, "https://example.com"),
+        );
+
+        let attempt = client.try_update_contract_meta(
+            &alice,
+            &String::from_str(&env, "hijacked"),
+            &String::from_str(&env, "https://evil.example/icon.png"),
+            &String::from_str(&env, "https://evil.example"),
+        );
+        assert!(attempt.is_err());
+
+        // The admin's metadata must survive the failed attempt.
+        let meta = client.get_contract_meta();
+        assert_eq!(meta.description, String::from_str(&env, "official"));
+        assert_eq!(
+            meta.icon_url,
+            String::from_str(&env, "https://example.com/icon.png")
+        );
+    }
+
+    #[test]
+    fn test_metadata_accepts_uri_at_max_length() {
+        let (env, ls_id, _, admin, _, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        // MAX_METADATA_LEN is the inclusive upper bound.
+        let uri = string_of_len(&env, MAX_METADATA_LEN as usize);
+        client.update_contract_meta(
+            &admin,
+            &String::from_str(&env, "ok"),
+            &uri,
+            &String::from_str(&env, "https://example.com"),
+        );
+
+        assert_eq!(client.get_contract_meta().icon_url.len(), MAX_METADATA_LEN);
+    }
+
+    #[test]
+    #[should_panic(expected = "HostError: Error(Contract, #14)")]
+    fn test_metadata_rejects_icon_url_over_max_length() {
+        let (env, ls_id, _, admin, _, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        let uri = string_of_len(&env, MAX_METADATA_LEN as usize + 1);
+        client.update_contract_meta(
+            &admin,
+            &String::from_str(&env, "ok"),
+            &uri,
+            &String::from_str(&env, "https://example.com"),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "HostError: Error(Contract, #14)")]
+    fn test_metadata_rejects_website_over_max_length() {
+        let (env, ls_id, _, admin, _, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        let website = string_of_len(&env, MAX_METADATA_LEN as usize + 1);
+        client.update_contract_meta(
+            &admin,
+            &String::from_str(&env, "ok"),
+            &String::from_str(&env, "https://example.com/icon.png"),
+            &website,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "HostError: Error(Contract, #14)")]
+    fn test_metadata_rejects_description_over_max_length() {
+        let (env, ls_id, _, admin, _, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        let description = string_of_len(&env, MAX_METADATA_LEN as usize + 1);
+        client.update_contract_meta(
+            &admin,
+            &description,
+            &String::from_str(&env, "https://example.com/icon.png"),
+            &String::from_str(&env, "https://example.com"),
+        );
+    }
+
+    #[test]
+    fn test_metadata_oversized_update_leaves_state_untouched() {
+        let (env, ls_id, _, admin, _, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        client.update_contract_meta(
+            &admin,
+            &String::from_str(&env, "official"),
+            &String::from_str(&env, "https://example.com/icon.png"),
+            &String::from_str(&env, "https://example.com"),
+        );
+
+        let oversized = string_of_len(&env, MAX_METADATA_LEN as usize + 1);
+        assert!(client
+            .try_update_contract_meta(
+                &admin,
+                &String::from_str(&env, "new"),
+                &oversized,
+                &String::from_str(&env, "https://example.com"),
+            )
+            .is_err());
+
+        assert_eq!(
+            client.get_contract_meta().icon_url,
+            String::from_str(&env, "https://example.com/icon.png")
+        );
+    }
+
+    #[test]
+    fn test_metadata_update_emits_event() {
+        let (env, ls_id, _, admin, _, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        let before = env.events().all().len();
+        client.update_contract_meta(
+            &admin,
+            &String::from_str(&env, "official"),
+            &String::from_str(&env, "https://example.com/icon.png"),
+            &String::from_str(&env, "https://example.com"),
+        );
+        let after = env.events().all().len();
+
+        assert!(
+            after > before,
+            "update_contract_meta must emit a MetadataUpdated event"
+        );
+    }
+
     #[test]
     fn test_nft_attributes() {
 
@@ -960,5 +1329,107 @@ mod tests {
         // After claim, sync is called, but rewards were just claimed, so it should be "0" again
         let metadata_after = nft_client.get_metadata(&token_id);
         assert_eq!(metadata_after.attributes.get(2).unwrap().value, String::from_str(&env, "0"));
+    }
+
+    // ── Reentrancy guard tests ──────────────────────────────────────────────
+
+    /// A malicious stake token that re-enters `unstake` during the withdrawal
+    /// transfer. It only re-enters when the caller is the liquid staking
+    /// contract itself (i.e. on the stake payout).
+    #[contract]
+    pub struct MaliciousToken;
+
+    #[contractimpl]
+    impl MaliciousToken {
+        pub fn init(env: Env, ls: Address) {
+            env.storage()
+                .instance()
+                .set(&soroban_sdk::symbol_short!("ls"), &ls);
+        }
+
+        pub fn transfer(env: Env, from: Address, _to: Address, _amount: i128) {
+            let ls: Address = env
+                .storage()
+                .instance()
+                .get(&soroban_sdk::symbol_short!("ls"))
+                .unwrap();
+            // The withdrawal path: the liquid staking contract is the sender.
+            if from == ls {
+                // Attempt to re-enter the guarded unstake function.
+                env.invoke_contract::<()>(
+                    &ls,
+                    &soroban_sdk::symbol_short!("unstake"),
+                    (ls.clone(), 1u64).into_val(&env),
+                );
+            }
+        }
+    }
+
+    /// Malicious token client handle (generated by the contract macro).
+    #[test]
+    #[should_panic]
+    fn test_unstake_reentrancy_guarded() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let alice = Address::generate(&env);
+
+        let reward_token_id = env.register_stellar_asset_contract_v2(admin.clone());
+        let reward_sac = StellarAssetClient::new(&env, &reward_token_id.address());
+        reward_sac.mint(&admin, &10_000_000);
+
+        // Register the malicious stake token.
+        let malicious_id = env.register_contract(None, MaliciousToken);
+        let malicious_client = MaliciousTokenClient::new(&env, &malicious_id);
+
+        let nft_contract_id = env.register_contract(None, nft_metadata::NftMetadataContract);
+        let nft_client = nft_metadata::NftMetadataContractClient::new(&env, &nft_contract_id);
+
+        let ls_contract_id = env.register_contract(None, LiquidStaking);
+        let ls_client = LiquidStakingClient::new(&env, &ls_contract_id);
+
+        nft_client.initialize(
+            &ls_contract_id,
+            &String::from_str(&env, "Liquid Stake"),
+            &String::from_str(&env, "LS"),
+        );
+        ls_client.initialize(
+            &admin,
+            &malicious_id,
+            &reward_token_id.address(),
+            &nft_contract_id,
+        );
+
+        // Tell the malicious token where to re-enter.
+        malicious_client.init(&ls_contract_id);
+
+        // Alice stakes (malicious transfer is a no-op on deposit, no reentry).
+        let token_id = ls_client.stake(&alice, &500_000, &0);
+
+        // Fund rewards so a reward payout also occurs during unstake.
+        ls_client.deposit_rewards(&admin, &1_000);
+
+        // The withdrawal transfer triggers the malicious callback, which attempts to
+        // call unstake again while the guard is held. The re-entrant call must be
+        // reverted (the Soroban host forbids contract re-entry, and our guard would
+        // revert with `Error::ReentrancyDetected` if re-entry were ever permitted).
+        ls_client.unstake(&alice, &token_id);
+    }
+
+    /// Directly exercises the reentrancy guard's revert behaviour: a second acquire
+    /// while the first is still held must revert with `Error::ReentrancyDetected`.
+    #[test]
+    #[should_panic(expected = "ReentrancyDetected")]
+    fn test_reentrancy_guard_reverts() {
+        let env = Env::default();
+        let id = env.register_contract(None, LiquidStaking);
+        env.as_contract(&id, || {
+            let _guard = ReentrancyGuard::new(&env).unwrap();
+            // While `_guard` is alive, a recursive acquire must revert.
+            let _recursive = ReentrancyGuard::new(&env)
+                .map_err(|_| Error::ReentrancyDetected)
+                .unwrap();
+        });
     }
 }

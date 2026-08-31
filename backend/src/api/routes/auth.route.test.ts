@@ -16,6 +16,7 @@ import { authLimiter } from '../middleware/rate-limit.middleware';
 const app = express();
 app.use(express.json());
 app.use('/sep10', authLimiter, authRouter);
+app.use('/auth', authLimiter, authRouter);
 
 describe('Auth Route Rate Limiting', () => {
   it('should return 429 when rate limit is exceeded', async () => {
@@ -25,5 +26,18 @@ describe('Auth Route Rate Limiting', () => {
     }
     const response = await request(app).post('/sep10').send({ account: 'GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX' });
     expect(response.status).toBe(429);
+  });
+});
+
+describe('GET /auth challenge generation', () => {
+  it('returns 400 when the account query parameter is missing', async () => {
+    const challengeApp = express();
+    challengeApp.use(express.json());
+    challengeApp.use('/auth', authRouter);
+
+    const response = await request(challengeApp).get('/auth');
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ error: 'account parameter is required' });
   });
 });

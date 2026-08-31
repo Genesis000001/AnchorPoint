@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, token, Address, Env, Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token, Address, Env, Vec,
 };
 
 #[contracttype]
@@ -12,6 +12,21 @@ pub enum DataKey {
     GovShareBps,
     PayoutTokens,
     PayoutCursor,
+    /// Configurable maximum deposit cap (i128). 0 = no cap enforced.
+    MaxDepositCap,
+    /// Running total of all tokens deposited into the contract.
+    TotalDeposits,
+}
+
+#[contract]
+pub struct RevenueDistributor;
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum Error {
+    /// Incoming deposit would push the pool total over the configured cap.
+    DepositCapExceeded = 1,
 }
 
 #[contract]
@@ -76,6 +91,103 @@ impl RevenueDistributor {
 
         tokens.push_back(token_addr);
         env.storage().instance().set(&DataKey::PayoutTokens, &tokens);
+    }
+
+    /// Set the maximum cumulative deposit cap (admin only).
+    ///
+    /// Setting `cap` to 0 disables the cap check (unlimited deposits).
+    ///
+    /// # Arguments
+    /// * `admin`  – Must be the contract admin
+    /// * `cap`    – Maximum total deposits allowed; 0 = no limit
+    pub fn set_max_deposit_cap(env: Env, admin: Address, cap: i128) {
+        admin.require_auth();
+        let current_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        assert_eq!(admin, current_admin, "not authorized");
+        assert!(cap >= 0, "cap must be non-negative");
+
+        env.storage().instance().set(&DataKey::MaxDepositCap, &cap);
+
+        env.events().publish((symbol_short!("set_cap"),), cap);
+    }
+
+    /// Return the current deposit cap (0 = no cap).
+    pub fn get_max_deposit_cap(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxDepositCap)
+            .unwrap_or(0)
+    }
+
+    /// Return the running total of all deposits accepted by the contract.
+    pub fn get_total_deposits(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::TotalDeposits)
+            .unwrap_or(0)
+    }
+
+    /// Deposit fee tokens into the contract for later distribution.
+    ///
+    /// Asserts that adding `amount` to the running total does not exceed the
+    /// configured `MaxDepositCap`. Returns `Error::DepositCapExceeded` if the
+    /// cap would be breached.
+    ///
+    /// # Arguments
+    /// * `from`       – Caller that authorises the token transfer
+    /// * `token_addr` – Fee token to deposit
+    /// * `amount`     – Amount to deposit (must be positive)
+    pub fn deposit(env: Env, from: Address, token_addr: Address, amount: i128) {
+        from.require_auth();
+        assert!(amount > 0, "amount must be positive");
+
+        // Enforce the deposit cap when one is configured.
+        let cap: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxDepositCap)
+            .unwrap_or(0);
+
+        if cap > 0 {
+            let current_total: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::TotalDeposits)
+                .unwrap_or(0);
+
+            let new_total = current_total
+                .checked_add(amount)
+                .unwrap_or_else(|| panic_with_error!(env, Error::DepositCapExceeded));
+
+            if new_total > cap {
+                panic_with_error!(env, Error::DepositCapExceeded);
+            }
+
+            env.storage().instance().set(&DataKey::TotalDeposits, &new_total);
+        } else {
+            // No cap: still track the running total for observability.
+            let current_total: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::TotalDeposits)
+                .unwrap_or(0);
+            let new_total = current_total
+                .checked_add(amount)
+                .expect("total deposits overflow");
+            env.storage().instance().set(&DataKey::TotalDeposits, &new_total);
+        }
+
+        // Pull the tokens from the caller into the contract.
+        token::Client::new(&env, &token_addr).transfer(
+            &from,
+            &env.current_contract_address(),
+            &amount,
+        );
+
+        env.events().publish(
+            (symbol_short!("deposited"), token_addr),
+            (from, amount),
+        );
     }
 
     /// Distributes the balance of a specific token held by this contract.
@@ -399,6 +511,89 @@ mod tests {
         let (env, distributor_id, admin, _, _, _) = setup();
         let client = RevenueDistributorClient::new(&env, &distributor_id);
         client.set_shares(&admin, &10001);
+    }
+
+    // ── Deposit cap tests (Issue #998) ───────────────────────────────────
+
+    #[test]
+    fn test_set_and_get_max_deposit_cap() {
+        let (env, distributor_id, admin, _, _, _) = setup();
+        let client = RevenueDistributorClient::new(&env, &distributor_id);
+
+        // Default: no cap
+        assert_eq!(client.get_max_deposit_cap(), 0);
+
+        // Admin sets a cap
+        client.set_max_deposit_cap(&admin, &5_000);
+        assert_eq!(client.get_max_deposit_cap(), 5_000);
+    }
+
+    #[test]
+    fn test_deposit_within_cap_succeeds() {
+        let (env, distributor_id, admin, _, _, _) = setup();
+        let client = RevenueDistributorClient::new(&env, &distributor_id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let depositor = Address::generate(&env);
+        token::StellarAssetClient::new(&env, &token_id.address()).mint(&depositor, &10_000);
+
+        // Set a cap of 8_000 and deposit 3_000 twice (total 6_000 < 8_000)
+        client.set_max_deposit_cap(&admin, &8_000);
+
+        client.deposit(&depositor, &token_id.address(), &3_000);
+        assert_eq!(client.get_total_deposits(), 3_000);
+
+        client.deposit(&depositor, &token_id.address(), &3_000);
+        assert_eq!(client.get_total_deposits(), 6_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "HostError: Error(Contract, #1)")]
+    fn test_deposit_exceeding_cap_is_rejected() {
+        let (env, distributor_id, admin, _, _, _) = setup();
+        let client = RevenueDistributorClient::new(&env, &distributor_id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let depositor = Address::generate(&env);
+        token::StellarAssetClient::new(&env, &token_id.address()).mint(&depositor, &10_000);
+
+        // Cap of 1_000, attempting to deposit 2_000 should fail
+        client.set_max_deposit_cap(&admin, &1_000);
+        client.deposit(&depositor, &token_id.address(), &2_000); // Must panic with DepositCapExceeded
+    }
+
+    #[test]
+    #[should_panic(expected = "HostError: Error(Contract, #1)")]
+    fn test_deposit_exceeds_cap_on_second_deposit() {
+        let (env, distributor_id, admin, _, _, _) = setup();
+        let client = RevenueDistributorClient::new(&env, &distributor_id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let depositor = Address::generate(&env);
+        token::StellarAssetClient::new(&env, &token_id.address()).mint(&depositor, &10_000);
+
+        // Cap of 1_500; first deposit OK, second deposit would overflow
+        client.set_max_deposit_cap(&admin, &1_500);
+        client.deposit(&depositor, &token_id.address(), &1_000); // OK
+        client.deposit(&depositor, &token_id.address(), &1_000); // Exceeds cap (1_000 + 1_000 = 2_000 > 1_500)
+    }
+
+    #[test]
+    fn test_deposit_no_cap_unlimited() {
+        let (env, distributor_id, _admin, _, _, _) = setup();
+        let client = RevenueDistributorClient::new(&env, &distributor_id);
+
+        let token_admin = Address::generate(&env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let depositor = Address::generate(&env);
+        token::StellarAssetClient::new(&env, &token_id.address()).mint(&depositor, &100_000);
+
+        // No cap set (default 0): large deposit should succeed
+        client.deposit(&depositor, &token_id.address(), &100_000);
+        assert_eq!(client.get_total_deposits(), 100_000);
     }
 
     // ── Sweep AMM tests ──

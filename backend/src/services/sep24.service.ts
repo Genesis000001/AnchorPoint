@@ -16,9 +16,42 @@ export interface Sep24StoredCallback {
   assetCode?: string;
   amount?: string;
   account?: string;
+  claimableBalanceId?: string;
 }
 
+export type Sep24MemoType = 'text' | 'id' | 'hash';
+
 export class Sep24Service {
+  /**
+   * Validates a Stellar transaction memo against the byte-length/format rules
+   * for the given memo type (SEP-24 supports text, id, and hash memos).
+   *
+   * @param memo The memo value to validate.
+   * @param memoType The memo type: 'text' (max 28 bytes UTF-8), 'id' (uint64), or 'hash' (32-byte hex).
+   * @returns boolean true if the memo is valid for the given type.
+   */
+  public static validateMemo(memo: string, memoType: Sep24MemoType): boolean {
+    if (!memo) return false;
+
+    switch (memoType) {
+      case 'text':
+        return Buffer.byteLength(memo, 'utf8') <= 28;
+      case 'id': {
+        if (!/^\d+$/.test(memo)) return false;
+        try {
+          const value = BigInt(memo);
+          return value >= BigInt(0) && value <= BigInt('18446744073709551615');
+        } catch {
+          return false;
+        }
+      }
+      case 'hash':
+        return /^[0-9a-fA-F]{64}$/.test(memo);
+      default:
+        return false;
+    }
+  }
+
   /**
    * Validates a callback or redirect URL against a whitelist of allowed domains.
    *
@@ -80,5 +113,47 @@ export class Sep24Service {
   ): Promise<Sep24CallbackDeliveryResult> {
     return notifySep24StatusChange(input);
   }
+
+  /**
+   * Notifies the partner callback for a SEP-24 deposit using a claimable balance
+   * with the claimable_balance_id required for redemption.
+   */
+  public static async notifyClaimableBalance(
+    transactionId: string,
+    claimableBalanceId: string,
+    callbackUrlOverride?: string,
+    redisService: RedisService = new RedisService(redis as any)
+  ): Promise<Sep24CallbackDeliveryResult> {
+    const stored = await this.getCallback(transactionId, redisService);
+    const callbackUrl = callbackUrlOverride || stored?.callbackUrl;
+
+    if (stored) {
+      stored.claimableBalanceId = claimableBalanceId;
+      await this.storeCallback(transactionId, stored, redisService);
+    }
+
+    if (!callbackUrl) {
+      return {
+        delivered: false,
+        skipped: true,
+        attempts: 0,
+        idempotencyKey: `sep24:${transactionId}:claimable`,
+        error: 'No callback URL configured',
+      };
+    }
+
+    return notifySep24StatusChange({
+      transactionId,
+      kind: stored?.kind ?? 'deposit',
+      previousStatus: 'pending_anchor',
+      nextStatus: 'pending_external',
+      callbackUrl,
+      claimableBalanceId,
+      amount: stored?.amount,
+      assetCode: stored?.assetCode,
+      event: 'sep24.transaction.claimable',
+    });
+  }
 }
+
 

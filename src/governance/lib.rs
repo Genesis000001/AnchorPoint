@@ -8,7 +8,7 @@
 //! - Mathematical accuracy is ensured through careful integer operations
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Env, IntoVal, String,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address, Env, IntoVal, String,
 };
 
 /// Default voting credits allocated to each user
@@ -16,6 +16,12 @@ const DEFAULT_VOTING_CREDITS: i128 = 10_000;
 
 /// Default quorum percentage (20% of total possible votes)
 const DEFAULT_QUORUM_PERCENTAGE: i128 = 20;
+
+/// Minimum voting period (1 day)
+const MIN_TIMELOCK: u64 = 86400;
+
+/// Maximum voting period (14 days)
+const MAX_TIMELOCK: u64 = 1_209_600;
 
 /// Storage keys for governance contract data
 #[contracttype]
@@ -40,6 +46,13 @@ pub enum DataKey {
     ProposalQuadraticCost(u32),
     /// User's quadratic cost spent on a proposal
     UserQuadraticCost(u32, Address),
+}
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum Error {
+    InvalidTimelockDuration = 1,
 }
 
 /// Proposal lifecycle states
@@ -259,6 +272,10 @@ impl GovernanceContract {
     ) -> u32 {
         creator.require_auth();
         assert!(voting_period > 0, "voting period must be positive");
+
+        if voting_period < MIN_TIMELOCK || voting_period > MAX_TIMELOCK {
+            panic_with_error!(&env, Error::InvalidTimelockDuration);
+        }
 
         let counter: u32 = env
             .storage()
@@ -843,9 +860,39 @@ mod tests {
             &creator,
             &String::from_str(&env, "Test Proposal"),
             &String::from_str(&env, "A proposal for testing"),
-            &3600u64,
+            &86400u64,
         );
         assert_eq!(proposal_id, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "HostError: Error(Contract, #1)")]
+    fn test_create_proposal_timelock_too_short() {
+        let (env, _, _) = setup();
+        let id = env.register(GovernanceContract, ());
+        let client = GovernanceContractClient::new(&env, &id);
+        let creator = Address::generate(&env);
+        client.create_proposal(
+            &creator,
+            &String::from_str(&env, "Test Proposal"),
+            &String::from_str(&env, "A proposal for testing"),
+            &86399u64, // MIN_TIMELOCK - 1
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "HostError: Error(Contract, #1)")]
+    fn test_create_proposal_timelock_too_long() {
+        let (env, _, _) = setup();
+        let id = env.register(GovernanceContract, ());
+        let client = GovernanceContractClient::new(&env, &id);
+        let creator = Address::generate(&env);
+        client.create_proposal(
+            &creator,
+            &String::from_str(&env, "Test Proposal"),
+            &String::from_str(&env, "A proposal for testing"),
+            &1209601u64, // MAX_TIMELOCK + 1
+        );
     }
 
     #[test]
@@ -876,7 +923,7 @@ mod tests {
             &creator,
             &String::from_str(&env, "Test Proposal"),
             &String::from_str(&env, "A proposal for testing"),
-            &3600u64,
+            &86400u64,
         );
         client.vote(&voter, &proposal_id, &true, &10i128);
 
@@ -914,7 +961,7 @@ mod tests {
             &creator,
             &String::from_str(&env, "Test Proposal"),
             &String::from_str(&env, "A proposal for testing"),
-            &3600u64,
+            &86400u64,
         );
         client.vote(&voter, &proposal_id, &true, &10i128);
         client.vote(&voter, &proposal_id, &true, &10i128);
@@ -939,7 +986,7 @@ mod tests {
             &creator,
             &String::from_str(&env, "Test Proposal"),
             &String::from_str(&env, "A proposal for testing"),
-            &3600u64,
+            &86400u64,
         );
 
         // Try to cast 11 votes (cost = 121, but only have 100 credits)
@@ -1014,7 +1061,7 @@ mod quadratic_voting_tests {
             &creator,
             &String::from_str(&env, "Quadratic Test"),
             &String::from_str(&env, "Testing quadratic voting efficiency"),
-            &3600u64,
+            &86400u64,
         );
 
         // Single voter with 100 credits casting 10 votes
@@ -1038,7 +1085,7 @@ mod quadratic_voting_tests {
             &creator,
             &String::from_str(&env, "Quadratic Test"),
             &String::from_str(&env, "Testing multiple voters"),
-            &3600u64,
+            &86400u64,
         );
 
         // 10 voters each with 1 credit, casting 1 vote each
@@ -1073,7 +1120,7 @@ mod quadratic_voting_tests {
             &creator,
             &String::from_str(&env, "Vote Record Test"),
             &String::from_str(&env, "Testing vote record storage"),
-            &3600u64,
+            &86400u64,
         );
 
         client.vote(&voter, &proposal_id, &false, &15);
@@ -1106,7 +1153,7 @@ mod quadratic_voting_tests {
             &creator,
             &String::from_str(&env, "Quorum Test"),
             &String::from_str(&env, "Testing quorum"),
-            &3600u64,
+            &86400u64,
         );
 
         let proposal = client.get_proposal(&proposal_id);

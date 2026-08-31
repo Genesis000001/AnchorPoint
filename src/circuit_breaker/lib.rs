@@ -45,6 +45,11 @@ pub enum DataKey {
     VolumeThreshold,
     /// Rolling window of volume entries: (ledger_timestamp, amount).
     VolumeWindow,
+    /// Cached boolean mirror of whether the breaker is currently engaged.
+    ///
+    /// Kept in sync with `PauseTier` on every state transition so integrators
+    /// can read a single cheap flag instead of matching on the tier enum.
+    IsPaused,
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -123,6 +128,7 @@ impl CircuitBreaker {
         env.storage()
             .instance()
             .set(&DataKey::PauseTier, &PauseTier::None);
+        env.storage().instance().set(&DataKey::IsPaused, &false);
         env.storage().instance().set(&DataKey::TimelockSeconds, &tl);
         env.storage().instance().set(&DataKey::VolatilityBps, &vbps);
         env.storage()
@@ -134,7 +140,9 @@ impl CircuitBreaker {
             .set(&DataKey::VolumeThreshold, &DEFAULT_VOLUME_THRESHOLD);
 
         let window: Vec<VolumeEntry> = Vec::new(&env);
-        env.storage().instance().set(&DataKey::VolumeWindow, &window);
+        env.storage()
+            .instance()
+            .set(&DataKey::VolumeWindow, &window);
 
         let bots: Vec<Address> = Vec::new(&env);
         env.storage()
@@ -342,7 +350,9 @@ impl CircuitBreaker {
             amount,
         });
 
-        env.storage().instance().set(&DataKey::VolumeWindow, &pruned);
+        env.storage()
+            .instance()
+            .set(&DataKey::VolumeWindow, &pruned);
 
         env.events().publish(
             (symbol_short!("cb"), symbol_short!("vol_rec")),
@@ -351,7 +361,12 @@ impl CircuitBreaker {
 
         // Trip if threshold is exceeded.
         if total > threshold {
-            Self::apply_trip(&env, PauseTier::All, TriggerSource::Oracle, env.current_contract_address());
+            Self::apply_trip(
+                &env,
+                PauseTier::All,
+                TriggerSource::Oracle,
+                env.current_contract_address(),
+            );
             env.events().publish(
                 (symbol_short!("cb"), symbol_short!("vol_trp")),
                 (total, threshold),
@@ -441,11 +456,55 @@ impl CircuitBreaker {
         env.storage().instance().set(&DataKey::PauseTier, &target);
         env.storage()
             .instance()
+            .set(&DataKey::IsPaused, &(target != PauseTier::None));
+        env.storage()
+            .instance()
             .set(&DataKey::UnpauseUnlocksAt, &0u64);
 
         env.events().publish(
             (symbol_short!("unpaused"), target),
             env.ledger().timestamp(),
+        );
+    }
+
+    /// Immediately resume protocol operations (admin only).
+    ///
+    /// This is the emergency counterpart to the timelocked
+    /// [`Self::initiate_unpause`] / [`Self::execute_unpause`] flow. The timelock
+    /// exists so a single compromised key cannot silently re-open the protocol
+    /// on a normal schedule; this escape hatch is deliberately restricted to the
+    /// admin and is intended for false-positive trips (e.g. an autonomous volume
+    /// or oracle trigger firing on benign activity) where waiting out the
+    /// timelock would itself be the outage.
+    ///
+    /// Clears any pending unpause so a stale scheduled transition cannot fire
+    /// afterwards and re-pause or re-tier the protocol unexpectedly.
+    pub fn unpause(env: Env, admin: Address) {
+        admin.require_auth();
+        Self::assert_admin(&env, &admin);
+
+        let current: PauseTier = env
+            .storage()
+            .instance()
+            .get(&DataKey::PauseTier)
+            .unwrap_or(PauseTier::None);
+
+        assert!(current != PauseTier::None, "protocol is not paused");
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PauseTier, &PauseTier::None);
+        env.storage().instance().set(&DataKey::IsPaused, &false);
+
+        // Drop any scheduled unpause so it cannot execute against stale state.
+        env.storage()
+            .instance()
+            .set(&DataKey::UnpauseUnlocksAt, &0u64);
+
+        // Topic: event name only; admin + timestamp in data.
+        env.events().publish(
+            (symbol_short!("cb"), symbol_short!("resumed")),
+            (admin, env.ledger().timestamp()),
         );
     }
 
@@ -535,6 +594,14 @@ impl CircuitBreaker {
     /// Returns true if all operations are halted.
     pub fn is_all_paused(env: Env) -> bool {
         Self::get_pause_tier(env) == PauseTier::All
+    }
+
+    /// Returns true if the breaker is engaged at any tier.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::IsPaused)
+            .unwrap_or(false)
     }
 
     /// Returns the timestamp when the pending unpause unlocks (0 = none pending).
@@ -643,6 +710,9 @@ impl CircuitBreaker {
     /// Core trip logic shared by all trigger paths.
     fn apply_trip(env: &Env, tier: PauseTier, source: TriggerSource, caller: Address) {
         env.storage().instance().set(&DataKey::PauseTier, &tier);
+        env.storage()
+            .instance()
+            .set(&DataKey::IsPaused, &(tier != PauseTier::None));
 
         let count: u32 = env
             .storage()
@@ -1118,7 +1188,8 @@ mod tests {
         assert_eq!(c.get_window_volume(), 600_000);
 
         // Advance ledger past the 1-hour window
-        env.ledger().with_mut(|l| l.timestamp = WINDOW_DURATION_SECONDS + 1);
+        env.ledger()
+            .with_mut(|l| l.timestamp = WINDOW_DURATION_SECONDS + 1);
 
         // Record new volume — old entry should be pruned
         c.record_volume(&100_000i128);
@@ -1168,5 +1239,202 @@ mod tests {
         let c = CircuitBreakerClient::new(&env, &id);
         c.initialize(&admin, &oracle, &3600u64, &500i128);
         c.record_volume(&0i128);
+    }
+
+    // ── Emergency pause/resume toggle ─────────────────────────────────────────
+
+    fn setup_cb(env: &Env) -> (Address, CircuitBreakerClient<'static>) {
+        let admin = Address::generate(env);
+        let oracle = Address::generate(env);
+        let id = env.register(CircuitBreaker, ());
+        let c = CircuitBreakerClient::new(env, &id);
+        c.initialize(&admin, &oracle, &3600u64, &500i128);
+        (admin, c)
+    }
+
+    #[test]
+    fn test_is_paused_false_after_initialize() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (_admin, c) = setup_cb(&env);
+        assert!(!c.is_paused());
+        assert_eq!(c.get_pause_tier(), PauseTier::None);
+    }
+
+    #[test]
+    fn test_trip_sets_is_paused_for_every_tier() {
+        for tier in [PauseTier::SwapOnly, PauseTier::WithdrawOnly, PauseTier::All] {
+            let env = Env::default();
+            env.mock_all_auths();
+            let (admin, c) = setup_cb(&env);
+
+            c.trip(&admin, &tier);
+            assert!(c.is_paused(), "is_paused must be true after tripping");
+            assert_eq!(c.get_pause_tier(), tier);
+
+            c.unpause(&admin);
+            assert!(!c.is_paused(), "is_paused must be false after unpause");
+            assert_eq!(c.get_pause_tier(), PauseTier::None);
+        }
+    }
+
+    #[test]
+    fn test_unpause_resumes_immediately_without_timelock() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, c) = setup_cb(&env);
+
+        c.trip(&admin, &PauseTier::All);
+        assert!(c.is_all_paused());
+
+        // No ledger advance: the emergency path must not wait for the timelock.
+        c.unpause(&admin);
+
+        assert_eq!(c.get_pause_tier(), PauseTier::None);
+        assert!(!c.is_paused());
+        assert!(!c.is_all_paused());
+        assert!(!c.is_swap_paused());
+        assert!(!c.is_withdraw_paused());
+    }
+
+    #[test]
+    fn test_unpause_clears_pending_timelocked_unpause() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, c) = setup_cb(&env);
+
+        c.trip(&admin, &PauseTier::All);
+        c.initiate_unpause(&admin, &PauseTier::SwapOnly);
+        assert!(c.get_unpause_unlock_time() > 0);
+
+        c.unpause(&admin);
+
+        // The scheduled transition must be dropped, not left armed.
+        assert_eq!(c.get_unpause_unlock_time(), 0);
+        assert_eq!(c.get_pause_tier(), PauseTier::None);
+        assert!(!c.is_paused());
+    }
+
+    #[test]
+    #[should_panic(expected = "no unpause pending")]
+    fn test_execute_unpause_after_emergency_unpause_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, c) = setup_cb(&env);
+
+        c.trip(&admin, &PauseTier::All);
+        c.initiate_unpause(&admin, &PauseTier::SwapOnly);
+        let unlock_time = c.get_unpause_unlock_time();
+
+        c.unpause(&admin);
+
+        env.ledger().with_mut(|l| l.timestamp = unlock_time + 1);
+        c.execute_unpause();
+    }
+
+    #[test]
+    #[should_panic(expected = "protocol is not paused")]
+    fn test_unpause_when_not_paused_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, c) = setup_cb(&env);
+        c.unpause(&admin);
+    }
+
+    #[test]
+    #[should_panic(expected = "caller is not admin")]
+    fn test_unpause_by_non_admin_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, c) = setup_cb(&env);
+        let rando = Address::generate(&env);
+
+        c.trip(&admin, &PauseTier::All);
+        c.unpause(&rando);
+    }
+
+    #[test]
+    #[should_panic(expected = "caller is not admin")]
+    fn test_unpause_by_bot_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, c) = setup_cb(&env);
+        let bot = Address::generate(&env);
+
+        c.add_bot(&admin, &bot);
+        c.trip(&bot, &PauseTier::All);
+
+        // A bot may trip the breaker but must not be able to resume it.
+        c.unpause(&bot);
+    }
+
+    #[test]
+    fn test_pause_unpause_cycle_is_repeatable() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, c) = setup_cb(&env);
+
+        for _ in 0..3 {
+            c.trip(&admin, &PauseTier::All);
+            assert!(c.is_paused());
+            c.unpause(&admin);
+            assert!(!c.is_paused());
+        }
+
+        // Each trip is still accounted for.
+        assert_eq!(c.get_trip_count(), 3);
+    }
+
+    #[test]
+    fn test_timelocked_unpause_to_lower_tier_keeps_is_paused_true() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (admin, c) = setup_cb(&env);
+
+        c.trip(&admin, &PauseTier::All);
+        c.initiate_unpause(&admin, &PauseTier::SwapOnly);
+        let unlock_time = c.get_unpause_unlock_time();
+        env.ledger().with_mut(|l| l.timestamp = unlock_time + 1);
+        c.execute_unpause();
+
+        // Still paused, just at a narrower tier.
+        assert_eq!(c.get_pause_tier(), PauseTier::SwapOnly);
+        assert!(c.is_paused());
+        assert!(c.is_swap_paused());
+    }
+
+    #[test]
+    fn test_unpause_emits_resumed_event() {
+        use soroban_sdk::{testutils::Events, vec as svec};
+
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let oracle = Address::generate(&env);
+        let id = env.register(CircuitBreaker, ());
+        let c = CircuitBreakerClient::new(&env, &id);
+        c.initialize(&admin, &oracle, &3600u64, &500i128);
+
+        c.trip(&admin, &PauseTier::All);
+        env.ledger().with_mut(|l| l.timestamp = 12_345);
+        c.unpause(&admin);
+
+        // `all()` reports the most recent invocation, i.e. the unpause call.
+        // Topics: (cb, resumed); data: (admin, timestamp).
+        assert_eq!(
+            env.events().all(),
+            svec![
+                &env,
+                (
+                    id.clone(),
+                    svec![
+                        &env,
+                        symbol_short!("cb").into_val(&env),
+                        symbol_short!("resumed").into_val(&env),
+                    ],
+                    (admin.clone(), 12_345u64).into_val(&env),
+                )
+            ]
+        );
     }
 }
