@@ -134,7 +134,8 @@ export const decodeContractEventEnvelope = (base64: string): DecodedEvent => {
         }
       })(),
       contractId: contractIdBytes
-        ? Address.contract(contractIdBytes).toString()
+        // The SDK declares byte fields as `Opaque[]` (its own "workaround" alias) while producing and consuming Buffers at runtime
+        ? Address.contract(contractIdBytes as any).toString()
         : undefined,
     };
   } catch (err) {

@@ -3,6 +3,7 @@ import { config } from '../config/env';
 import { redis } from '../lib/redis';
 import { AdvancedCacheService } from './advanced-cache.service';
 import { stellarService } from './stellar.service';
+import { sorobanRpcProxy } from '../resilience/soroban.proxy';
 import logger from '../utils/logger';
 
 export interface ContractInfo {
@@ -68,7 +69,7 @@ export class RegistryService {
           .setTimeout(30)
           .build();
         
-        const simulatedTx = (await rpcServer.simulateTransaction(tx)) as any;
+        const simulatedTx = (await sorobanRpcProxy.simulateTransaction(rpcServer, tx, `registry:${contractType}`)) as any;
         if (simulatedTx.error) {
           throw new Error(`Failed to simulate transaction: ${simulatedTx.error}`);
         }

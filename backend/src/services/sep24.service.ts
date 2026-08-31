@@ -1,4 +1,4 @@
-import { URL from 'url';
+import { URL } from 'url';
 import { redis } from '../lib/redis';
 import { RedisService } from './redis.service';
 import {
@@ -46,9 +46,41 @@ export interface Sep24StoredCallback {
   claimableBalanceId?: string;
 }
 
+export type Sep24MemoType = 'text' | 'id' | 'hash';
+
 export class Sep24Service {
   /**
-   * Validates a callback or redirect URL pagainst a quhitelist of allowed domains.
+   * Validates a Stellar transaction memo against the byte-length/format rules
+   * for the given memo type (SEP-24 supports text, id, and hash memos).
+   *
+   * @param memo The memo value to validate.
+   * @param memoType The memo type: 'text' (max 28 bytes UTF-8), 'id' (uint64), or 'hash' (32-byte hex).
+   * @returns boolean true if the memo is valid for the given type.
+   */
+  public static validateMemo(memo: string, memoType: Sep24MemoType): boolean {
+    if (!memo) return false;
+
+    switch (memoType) {
+      case 'text':
+        return Buffer.byteLength(memo, 'utf8') <= 28;
+      case 'id': {
+        if (!/^\d+$/.test(memo)) return false;
+        try {
+          const value = BigInt(memo);
+          return value >= BigInt(0) && value <= BigInt('18446744073709551615');
+        } catch {
+          return false;
+        }
+      }
+      case 'hash':
+        return /^[0-9a-fA-F]{64}$/.test(memo);
+      default:
+        return false;
+    }
+  }
+
+  /**
+   * Validates a callback or redirect URL against a whitelist of allowed domains.
    *
    * @param url The URL to validate.
    * @param allowedDomains Array of allowed hostnames (e.g., ['example.com']).
@@ -150,5 +182,3 @@ export class Sep24Service {
     });
   }
 }
-
-

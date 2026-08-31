@@ -10,7 +10,7 @@ import {
 import prisma from '../../lib/prisma';
 import { isValidStellarPublicKey } from '../../utils/stellar-address';
 import { sep24MetricsMiddleware } from '../middleware/sep24-metrics.middleware';
-import { Sep24Service } from '../../services/sep24.service';
+import { Sep24Service, Sep24MemoType } from '../../services/sep24.service';
 
 const router = Router();
 
@@ -37,6 +37,25 @@ interface InteractiveRequest {
   redirect_url?: string;
   on_change_callback?: string;
   callback?: string;
+  memo?: string;
+  memo_type?: string;
+}
+
+const VALID_MEMO_TYPES: Sep24MemoType[] = ['text', 'id', 'hash'];
+
+function validateMemoFields(memo: string | undefined, memoType: string | undefined): string | null {
+  if (memo === undefined) return null;
+
+  const resolvedMemoType = memoType ?? 'text';
+  if (!VALID_MEMO_TYPES.includes(resolvedMemoType as Sep24MemoType)) {
+    return 'memo_type must be one of text, id, hash';
+  }
+
+  if (!Sep24Service.validateMemo(memo, resolvedMemoType as Sep24MemoType)) {
+    return `memo is invalid for memo_type ${resolvedMemoType}`;
+  }
+
+  return null;
 }
 
 interface InteractiveResponse {
@@ -115,7 +134,7 @@ const toEpochSeconds = (date: Date | null | undefined): number | null => {
  *         description: Invalid request parameters
  */
 router.post('/transactions/deposit/interactive', async (req: Request, res: Response) => {
-  const { asset_code, account, amount, lang = 'en', quote_id, redirect_url, on_change_callback, callback }: InteractiveRequest = req.body;
+  const { asset_code, account, amount, lang = 'en', quote_id, redirect_url, on_change_callback, callback, memo, memo_type }: InteractiveRequest = req.body;
 
   const allowedDomains = process.env.SEP24_ALLOWED_CALLBACK_DOMAINS
     ? process.env.SEP24_ALLOWED_CALLBACK_DOMAINS.split(',').filter(Boolean)
@@ -127,6 +146,11 @@ router.post('/transactions/deposit/interactive', async (req: Request, res: Respo
 
   if (on_change_callback && allowedDomains.length > 0 && !Sep24Service.validateCallbackUrl(on_change_callback, allowedDomains)) {
     return res.status(400).json({ error: 'invalid on_change_callback domain' });
+  }
+
+  const memoError = validateMemoFields(memo, memo_type);
+  if (memoError) {
+    return res.status(400).json({ error: memoError });
   }
 
   if (!asset_code) {
@@ -238,7 +262,7 @@ router.post('/transactions/deposit/interactive', async (req: Request, res: Respo
  *         description: Invalid request parameters
  */
 router.post('/transactions/withdraw/interactive', async (req: Request, res: Response) => {
-  const { asset_code, account, amount, lang = 'en', quote_id, redirect_url, on_change_callback, callback }: InteractiveRequest = req.body;
+  const { asset_code, account, amount, lang = 'en', quote_id, redirect_url, on_change_callback, callback, memo, memo_type }: InteractiveRequest = req.body;
 
   const allowedDomains = process.env.SEP24_ALLOWED_CALLBACK_DOMAINS
     ? process.env.SEP24_ALLOWED_CALLBACK_DOMAINS.split(',').filter(Boolean)
@@ -250,6 +274,11 @@ router.post('/transactions/withdraw/interactive', async (req: Request, res: Resp
 
   if (on_change_callback && allowedDomains.length > 0 && !Sep24Service.validateCallbackUrl(on_change_callback, allowedDomains)) {
     return res.status(400).json({ error: 'invalid on_change_callback domain' });
+  }
+
+  const memoError = validateMemoFields(memo, memo_type);
+  if (memoError) {
+    return res.status(400).json({ error: memoError });
   }
 
   if (!asset_code) {
