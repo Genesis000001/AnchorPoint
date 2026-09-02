@@ -1,0 +1,30 @@
+{{/*
+=============================================================================
+Service — stable internal DNS entry and load balancing for backend pods.
+Exposes both the HTTP API port (3002) and the Prometheus metrics port (9464).
+=============================================================================
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "anchor-point.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "anchor-point.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "anchor-point.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+    - name: metrics
+      port: {{ .Values.service.metricsPort }}
+      targetPort: metrics
+      protocol: TCP

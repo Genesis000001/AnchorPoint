@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { ShieldCheck, ExternalLink, Lock, AlertTriangle, CheckCircle2, X } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { ShieldCheck, ExternalLink, Lock, AlertTriangle, CheckCircle2, X, Maximize, Minimize } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 type WebviewState = 'idle' | 'loading' | 'active' | 'approved' | 'rejected';
@@ -33,6 +33,20 @@ export const InteractiveWebview = ({
   const [webviewState, setWebviewState] = useState<WebviewState>('idle');
   const [loadStep, setLoadStep] = useState(0);
   const [simulatedField, setSimulatedField] = useState('');
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  const handleFullscreenToggle = useCallback(() => {
+    setIsFullscreen(prev => !prev);
+  }, []);
+
+  // Handle window resize to maintain proper layout
+  useEffect(() => {
+    const handleResize = () => {
+      // No state updates needed, CSS transitions handle it smoothly
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
@@ -91,12 +105,15 @@ export const InteractiveWebview = ({
         )}
       </div>
 
-      <div
-        className="relative aspect-video overflow-hidden rounded-xl border border-slate-700 bg-slate-950"
+      <motion.div
+        className={`relative overflow-hidden rounded-xl border border-slate-700 bg-slate-950 transition-all duration-300 ease-in-out ${
+          isFullscreen ? 'fixed inset-4 z-50 w-[calc(100%-2rem)] h-[calc(100%-2rem)]' : 'aspect-video'
+        }`}
         role="region"
         aria-label={`${title} interactive panel`}
         aria-live="polite"
         aria-busy={webviewState === 'loading'}
+        layout
       >
         <AnimatePresence mode="wait">
           {webviewState === 'idle' && (
@@ -170,6 +187,20 @@ export const InteractiveWebview = ({
                     {interactiveUrl ?? `https://kyc.${anchorName.toLowerCase().replace(/\s+/g, '')}.example/sep24`}
                   </span>
                 </div>
+                <button
+                  onClick={handleFullscreenToggle}
+                  className="rounded p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                  aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+                >
+                  {isFullscreen ? <Minimize size={16} aria-hidden="true" /> : <Maximize size={16} aria-hidden="true" />}
+                </button>
+                <button
+                  onClick={handleReject}
+                  className="rounded p-1.5 text-slate-400 hover:bg-slate-800 hover:text-rose-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/50"
+                  aria-label="Close webview"
+                >
+                  <X size={16} aria-hidden="true" />
+                </button>
               </div>
 
               <div className="flex flex-1 flex-col items-center justify-center gap-4 p-6">
@@ -250,7 +281,7 @@ export const InteractiveWebview = ({
             </motion.div>
           )}
         </AnimatePresence>
-      </div>
+      </motion.div>
     </div>
   );
 };

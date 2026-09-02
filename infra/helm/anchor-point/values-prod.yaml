@@ -1,0 +1,99 @@
+# =============================================================================
+# AnchorPoint Helm Chart - Production Overrides
+# =============================================================================
+# Apply on top of values.yaml:
+#
+#   helm upgrade --install anchor-point ./infra/helm/anchor-point \
+#     -f infra/helm/anchor-point/values-prod.yaml \
+#     --namespace anchorpoint-prod --create-namespace
+# =============================================================================
+
+namespace: anchorpoint-prod
+
+image:
+  repository: ghcr.io/ceejaylaboratory/anchorpoint-backend
+  pullPolicy: IfNotPresent
+  tag: ""   # REQUIRED — set via --set image.tag=<semver> in CI/CD; empty string fails helm lint intentionally
+
+replicaCount: 3
+
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 0   # Zero-downtime: no pod is removed before a new one is Ready
+    maxSurge: 1
+
+# -- Non-sensitive config overrides -------------------------------------------
+config:
+  LOG_LEVEL: "warn"
+  NODE_ENV: "production"
+  PORT: "3002"
+  METRICS_PORT: "9464"
+  STELLAR_NETWORK: "mainnet"
+  QUEUE_CONCURRENCY: "10"
+  REQUEST_TIMEOUT_MS: "30000"
+
+# -- Ingress ------------------------------------------------------------------
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: "anchorpoint-prod-issuer"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/hsts: "true"
+    nginx.ingress.kubernetes.io/hsts-max-age: "31536000"
+    nginx.ingress.kubernetes.io/hsts-include-subdomains: "true"
+    # Rate limiting to protect the production API
+    nginx.ingress.kubernetes.io/limit-rps: "50"
+  hosts:
+    - host: api.anchorpoint.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: anchorpoint-api-prod-tls
+      hosts:
+        - api.anchorpoint.example.com
+
+# -- Resources (production-grade) ---------------------------------------------
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+# -- HPA (enabled in production) ----------------------------------------------
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 60
+  targetMemoryUtilizationPercentage: 70
+
+# -- PDB (enabled in production for HA) ---------------------------------------
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+# -- Affinity: spread pods across availability zones --------------------------
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: anchor-point
+          topologyKey: topology.kubernetes.io/zone
+
+# -- Secrets: point to a pre-created production secret -----------------------
+secrets:
+  existingSecret: "anchorpoint-prod-secrets"
+  keys:
+    - REDIS_URL
+    - DATABASE_URL
+    - STELLAR_PASSPHRASE
+    - STELLAR_DEPLOYER_SECRET
+    - JWT_SECRET

@@ -14,7 +14,14 @@ metadata:
     component: ingress
     environment: testnet
   annotations:
+    # cert-manager provisions and automatically renews the TLS certificate for
+    # this ingress using the configured ClusterIssuer (Let's Encrypt).
     cert-manager.io/cluster-issuer: anchorpoint-staging-issuer
+    # Renew the certificate in-place by editing the existing Ingress rather than
+    # recreating it during the ACME HTTP-01 challenge to avoid downtime.
+    acme.cert-manager.io/http01-edit-in-place: "true"
+    # Surface certificate readiness/events on the Ingress for smoke-test checks.
+    cert-manager.io/issue-temporary-certificate: "false"
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/hsts: "true"
     nginx.ingress.kubernetes.io/hsts-max-age: "31536000"

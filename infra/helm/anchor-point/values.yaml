@@ -1,0 +1,185 @@
+# =============================================================================
+# AnchorPoint Helm Chart - Default Values
+# =============================================================================
+# These are the base defaults. Override per-environment with:
+#   values-staging.yaml  — staging cluster
+#   values-prod.yaml     — production cluster
+#
+# Usage:
+#   helm upgrade --install anchor-point ./infra/helm/anchor-point \
+#     -f infra/helm/anchor-point/values-staging.yaml \
+#     --namespace anchorpoint-staging --create-namespace
+# =============================================================================
+
+# -- Global settings ----------------------------------------------------------
+nameOverride: ""
+fullnameOverride: ""
+
+# Kubernetes namespace (used in NOTES.txt; actual namespace set via --namespace)
+namespace: anchorpoint
+
+# -- Image --------------------------------------------------------------------
+image:
+  repository: ghcr.io/ceejaylaboratory/anchorpoint-backend
+  pullPolicy: IfNotPresent
+  # Overridden in CI/CD with the Git SHA or semver tag
+  tag: "latest"
+
+imagePullSecrets: []
+
+# -- Service Account ----------------------------------------------------------
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# -- Replica count ------------------------------------------------------------
+replicaCount: 2
+
+# -- Deployment strategy ------------------------------------------------------
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
+    maxSurge: 1
+
+# -- Container ports ----------------------------------------------------------
+service:
+  type: ClusterIP
+  port: 3002
+  metricsPort: 9464
+  annotations: {}
+
+# -- Ingress ------------------------------------------------------------------
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: "anchorpoint-staging-issuer"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/hsts: "true"
+    nginx.ingress.kubernetes.io/hsts-max-age: "31536000"
+    nginx.ingress.kubernetes.io/hsts-include-subdomains: "true"
+  hosts:
+    - host: api.anchorpoint.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: anchorpoint-api-tls
+      hosts:
+        - api.anchorpoint.example.com
+
+# -- Resource requests & limits -----------------------------------------------
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# -- Horizontal Pod Autoscaler ------------------------------------------------
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# -- Health probes ------------------------------------------------------------
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 3002
+    scheme: HTTP
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+  successThreshold: 1
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 3002
+    scheme: HTTP
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 2
+  successThreshold: 1
+
+# -- Security context (pod-level) ---------------------------------------------
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+# -- Security context (container-level) ---------------------------------------
+containerSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# -- Pod disruption budget ----------------------------------------------------
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+# -- Non-sensitive ConfigMap environment variables ----------------------------
+# These are rendered into a ConfigMap and loaded via envFrom
+config:
+  LOG_LEVEL: "info"
+  NODE_ENV: "production"
+  PORT: "3002"
+  METRICS_PORT: "9464"
+  STELLAR_NETWORK: "testnet"
+  QUEUE_CONCURRENCY: "5"
+  REQUEST_TIMEOUT_MS: "30000"
+
+# -- Secret references --------------------------------------------------------
+# The chart expects a pre-existing Secret named <fullname>-secrets (or
+# set existingSecret to point to your own).  Keys must match exactly.
+secrets:
+  # Set existingSecret to the name of a pre-created secret to skip
+  # the bundled Secret manifest (recommended for production).
+  existingSecret: ""
+  # Keys expected inside the secret
+  keys:
+    - REDIS_URL
+    - DATABASE_URL
+    - STELLAR_PASSPHRASE
+    - STELLAR_DEPLOYER_SECRET
+    - JWT_SECRET
+
+# -- Pod annotations (e.g. Prometheus scrape) ---------------------------------
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9464"
+  prometheus.io/path: "/metrics"
+
+# -- Node selector / tolerations / affinity -----------------------------------
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# -- Extra environment variables (injected directly into the container) -------
+extraEnv: []
+# - name: SOME_FLAG
+#   value: "true"
+
+# -- Extra volumes / volumeMounts (e.g. tmp dir for readOnlyRootFilesystem) ---
+extraVolumes:
+  - name: tmp
+    emptyDir: {}
+
+extraVolumeMounts:
+  - name: tmp
+    mountPath: /tmp
