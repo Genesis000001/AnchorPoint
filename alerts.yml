@@ -1,0 +1,11 @@
+groups:
+  - name: api-alerts
+    rules:
+      - alert: HighErrorRate
+        expr: 'sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) > 0.05'
+        labels:
+          severity: critical
+      - alert: DatabaseConnectionExhausted
+        expr: 'database_connections_active / database_connections_max > 0.9'
+        labels:
+          severity: critical

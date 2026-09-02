@@ -7,7 +7,6 @@ import { DepositForm } from './DepositForm';
 import { DepositErrorAlert } from './DepositErrorAlert';
 import { InteractiveWebview } from './InteractiveWebview';
 import { AssetDropdown } from './AssetDropdown';
-import { Sep24Wizard } from './Sep24Wizard';
 import type { AssetOption } from './AssetDropdown';
 import type { DepositError } from './DepositErrorAlert';
 import type { UiConfig } from '../types';
@@ -23,7 +22,15 @@ const ASSET_OPTIONS: AssetOption[] = [
   { code: 'ARST', name: 'ARS Token', subtitle: 'Argentine peso corridor asset for local payouts' },
 ];
 
-export const SEP24Flow = ({ type, uiConfig }: { type: 'deposit' | 'withdraw'; uiConfig: UiConfig }) => {
+export const SEP24Flow = ({
+  type,
+  uiConfig,
+  apiBaseUrl,
+}: {
+  type: 'deposit' | 'withdraw';
+  uiConfig: UiConfig;
+  apiBaseUrl?: string;
+}) => {
   const [step, setStep] = useState(1);
   const [selectedAsset, setSelectedAsset] = useState(ASSET_OPTIONS[0].code);
   const [depositError, setDepositError] = useState<DepositError | null>(null);
@@ -195,7 +202,12 @@ export const SEP24Flow = ({ type, uiConfig }: { type: 'deposit' | 'withdraw'; ui
               <p className="text-slate-400">
                 All fields are validated before proceeding. Required fields are marked accordingly.
               </p>
-              <WithdrawalForm fields={transactionFields} onSubmit={() => goToStep(3)} />
+              <WithdrawalForm
+                fields={transactionFields}
+                assetCode={selectedAsset}
+                apiBaseUrl={apiBaseUrl}
+                onSubmit={() => goToStep(3)}
+              />
               <button
                 onClick={() => goToStep(1)}
                 className="rounded text-sm text-slate-500 hover:text-slate-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
@@ -291,7 +303,6 @@ export const SEP24Flow = ({ type, uiConfig }: { type: 'deposit' | 'withdraw'; ui
               rules pulled from the backend.
             </p>
             <div className="space-y-4">
-              <Sep24Wizard type={type} uiConfig={uiConfig} />
               <button
                 onClick={() => goToStep(1)}
                 className="font-medium text-primary-text hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-text"

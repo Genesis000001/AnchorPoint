@@ -26,7 +26,7 @@ const encodeValue = (value: unknown): xdr.ScVal => {
     return xdr.ScVal.scvString(value);
   }
   if (typeof value === 'number') {
-    return xdr.ScVal.scvI64(BigInt(value));
+    return xdr.ScVal.scvI64(new xdr.Int64(BigInt(value)));
   }
   if (typeof value === 'boolean') {
     return xdr.ScVal.scvBool(value);
@@ -79,7 +79,7 @@ export const ContractPlayground: React.FC<ContractPlaygroundProps> = ({ apiBaseU
         .build();
 
       const simulated = await server.simulateTransaction(tx);
-      const retval = simulated?.result?.retval;
+      const retval = 'result' in simulated ? simulated.result?.retval : undefined;
       if (!retval) {
         throw new Error('The contract returned no value.');
       }
@@ -134,7 +134,7 @@ export const ContractPlayground: React.FC<ContractPlaygroundProps> = ({ apiBaseU
             onChange={(event) => setArgumentsInput(event.target.value)}
             rows={6}
             className="input-field min-h-32 w-full font-mono text-sm"
-            placeholder="[\"AnchorPoint\"]"
+            placeholder={'["AnchorPoint"]'}
           />
         </label>
 

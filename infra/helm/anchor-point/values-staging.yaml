@@ -1,0 +1,85 @@
+# =============================================================================
+# AnchorPoint Helm Chart - Staging Overrides
+# =============================================================================
+# Apply on top of values.yaml:
+#
+#   helm upgrade --install anchor-point ./infra/helm/anchor-point \
+#     -f infra/helm/anchor-point/values-staging.yaml \
+#     --namespace anchorpoint-staging --create-namespace
+# =============================================================================
+
+namespace: anchorpoint-staging
+
+image:
+  repository: ghcr.io/ceejaylaboratory/anchorpoint-backend
+  pullPolicy: Always
+  tag: "latest"   # CI/CD replaces this with the branch SHA
+
+replicaCount: 2
+
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
+    maxSurge: 1
+
+# -- Non-sensitive config overrides -------------------------------------------
+config:
+  LOG_LEVEL: "debug"
+  NODE_ENV: "staging"
+  PORT: "3002"
+  METRICS_PORT: "9464"
+  STELLAR_NETWORK: "testnet"
+  QUEUE_CONCURRENCY: "5"
+  REQUEST_TIMEOUT_MS: "30000"
+
+# -- Ingress ------------------------------------------------------------------
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: "anchorpoint-staging-issuer"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/hsts: "true"
+    nginx.ingress.kubernetes.io/hsts-max-age: "31536000"
+    nginx.ingress.kubernetes.io/hsts-include-subdomains: "true"
+  hosts:
+    - host: api.staging.anchorpoint.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: anchorpoint-api-staging-tls
+      hosts:
+        - api.staging.anchorpoint.example.com
+
+# -- Resources (relaxed for staging) -----------------------------------------
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# -- HPA (disabled in staging; use fixed replicas) ----------------------------
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 4
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# -- PDB (disabled in staging) ------------------------------------------------
+podDisruptionBudget:
+  enabled: false
+
+# -- Secrets: point to a pre-created staging secret --------------------------
+secrets:
+  existingSecret: "anchorpoint-staging-secrets"
+  keys:
+    - REDIS_URL
+    - DATABASE_URL
+    - STELLAR_PASSPHRASE
+    - STELLAR_DEPLOYER_SECRET
+    - JWT_SECRET

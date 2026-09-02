@@ -11,9 +11,12 @@ import {
   submitSignedTransaction,
   generateNonce,
   getRelayerConfig,
+  getFeeEstimate,
+  submitFeeBump,
 } from '../controllers/relayer.controller';
 
 const router = Router();
+
 
 /**
  * @swagger
@@ -164,4 +167,61 @@ router.get('/nonce', generateNonce);
  */
 router.get('/config', getRelayerConfig);
 
+/**
+ * @swagger
+ * /api/relayer/fee-estimate:
+ *   get:
+ *     summary: Get dynamic fee estimate from Horizon
+ *     description: Returns dynamic fee estimation with surge pricing multiplier and fee cap protection
+ *     tags: [Relayer]
+ *     parameters:
+ *       - in: query
+ *         name: multiplier
+ *         schema:
+ *           type: number
+ *         description: Optional surge fee multiplier override (e.g. 1.5)
+ *     responses:
+ *       200:
+ *         description: Fee estimate retrieved successfully
+ *       500:
+ *         description: Internal server error
+ */
+router.get('/fee-estimate', getFeeEstimate);
+
+/**
+ * @swagger
+ * /api/relayer/fee-bump:
+ *   post:
+ *     summary: Submit a Fee Bump transaction
+ *     description: Wraps an underpriced/congested transaction with a FeeBumpTransaction and submits it
+ *     tags: [Relayer]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - transactionXdr
+ *             properties:
+ *               transactionXdr:
+ *                 type: string
+ *                 description: Base64 encoded signed inner transaction envelope
+ *               networkPassphrase:
+ *                 type: string
+ *                 description: Network passphrase (optional)
+ *               maxFee:
+ *                 type: number
+ *                 description: Maximum fee stroops for the bump (optional)
+ *     responses:
+ *       200:
+ *         description: Fee bump submitted successfully
+ *       400:
+ *         description: Invalid request or submission failure
+ *       500:
+ *         description: Internal server error
+ */
+router.post('/fee-bump', submitFeeBump);
+
 export default router;
+

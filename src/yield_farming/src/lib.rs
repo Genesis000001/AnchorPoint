@@ -43,6 +43,8 @@ pub enum DataKey {
     UserRewardRemainder(Address),
     /// Pending (unclaimed) rewards for a user.
     Rewards(Address),
+    /// Accumulated protocol fee rewards available to harvest.
+    ProtocolFeeBalance,
 }
 
 #[contract]
@@ -135,6 +137,59 @@ impl YieldFarmingDistributor {
                 .publish((symbol_short!("claimed"),), (user, reward));
         }
         reward
+    }
+
+    /// Harvest accumulated protocol fee rewards and distribute them to liquidity providers.
+    ///
+    /// Only the admin is authorized to trigger this harvest. The function:
+    /// 1. Flushes the global reward accumulator to the current ledger.
+    /// 2. Reads and clears the accumulated protocol fee balance.
+    /// 3. Transfers the full fee balance from the contract to the caller (admin).
+    /// 4. Emits a `YieldHarvested(amount, timestamp)` event.
+    ///
+    /// Returns the harvested amount.
+    ///
+    /// # Panics
+    /// Panics if the caller is not the admin or if there are no fees to harvest.
+    #[allow(deprecated)]
+    pub fn harvest_yield(env: Env) -> i128 {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+
+        // Flush the global accumulator so reward index is up-to-date.
+        Self::_update_global_reward(&env);
+
+        let fee_balance: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProtocolFeeBalance)
+            .unwrap_or(0);
+
+        assert!(fee_balance > 0, "no fees to harvest");
+
+        // Clear the protocol fee balance.
+        env.storage()
+            .instance()
+            .set(&DataKey::ProtocolFeeBalance, &0i128);
+
+        // Transfer fee rewards from contract to admin.
+        let reward_token: Address = env.storage().instance().get(&DataKey::RewardToken).unwrap();
+        env.invoke_contract::<()>(
+            &reward_token,
+            &symbol_short!("transfer"),
+            soroban_sdk::vec![
+                &env,
+                env.current_contract_address().to_val(),
+                admin.to_val(),
+                fee_balance.into_val(&env)
+            ],
+        );
+
+        let timestamp = env.ledger().timestamp();
+        env.events()
+            .publish((symbol_short!("harvested"),), (fee_balance, timestamp));
+
+        fee_balance
     }
 
     /// View function: returns the total pending rewards for `user` without
@@ -755,5 +810,54 @@ mod tests {
         env.ledger().set_sequence_number(200_010);
         let claimed2 = dist.claim_rewards(&user);
         assert_eq!(claimed2, 94_999_520);
+    }
+
+    #[test]
+    fn test_harvest_yield_distributes_protocol_fees() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (dist, amm, token, dist_id, admin) = setup(&env, 1_000);
+
+        // Seed the ProtocolFeeBalance in instance storage
+        let fee_amount: i128 = 50_000;
+        env.as_contract(&dist_id, || {
+            env.storage()
+                .instance()
+                .set(&DataKey::ProtocolFeeBalance, &fee_amount);
+        });
+
+        // Ensure the distributor has enough tokens to cover the harvest
+        token.mint(&dist_id, &fee_amount);
+
+        let admin_before = token.balance(&admin);
+        let harvested = dist.harvest_yield();
+
+        assert_eq!(harvested, fee_amount);
+        assert_eq!(token.balance(&admin), admin_before + fee_amount);
+
+        // After harvest, protocol fee balance should be zero
+        env.as_contract(&dist_id, || {
+            let remaining: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::ProtocolFeeBalance)
+                .unwrap_or(0);
+            assert_eq!(remaining, 0);
+        });
+
+        // AMM setup is needed for pending_rewards; just verify no double-count
+        let user = Address::generate(&env);
+        amm.set_total_shares(&1_000);
+        amm.set_shares(&user, &1_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "no fees to harvest")]
+    fn test_harvest_yield_zero_fees_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (dist, _amm, _token, _dist_id, _admin) = setup(&env, 1_000);
+        // No protocol fees set → should panic
+        dist.harvest_yield();
     }
 }

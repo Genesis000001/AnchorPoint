@@ -69,12 +69,28 @@ interface TokenResponse {
  * SEP-10 Challenge Endpoint
  * Generates and stores a challenge for the given account
  */
+function readStringParam(bodyValue: unknown, queryValue: unknown): string | undefined {
+  if (typeof bodyValue === 'string' && bodyValue.length > 0) {
+    return bodyValue;
+  }
+  if (typeof queryValue === 'string' && queryValue.length > 0) {
+    return queryValue;
+  }
+  if (Array.isArray(queryValue) && typeof queryValue[0] === 'string' && queryValue[0].length > 0) {
+    return queryValue[0];
+  }
+  return undefined;
+}
+
 export const getChallenge = async (
   req: Request,
   res: Response,
   redisService: RedisService
 ): Promise<Response> => {
-  const { account, client_domain, signers, threshold, multiKey }: ChallengeRequest = req.body;
+  const body = (req.body ?? {}) as ChallengeRequest;
+  const account = readStringParam(body.account, req.query?.account);
+  const client_domain = readStringParam(body.client_domain, req.query?.client_domain);
+  const { signers, threshold, multiKey } = body;
 
   if (!account) {
     return res.status(400).json({

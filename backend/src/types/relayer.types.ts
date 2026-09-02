@@ -32,6 +32,10 @@ export interface RelayerConfig {
   maxAmount: string;
   allowedSpenders: string[];
   expiryWindowSeconds: number;
+  baseFee?: number;
+  surgeMultiplier?: number;
+  maxFeeCap?: number;
+  dynamicFeesEnabled?: boolean;
 }
 
 export interface SignatureVerificationResult {
@@ -46,3 +50,30 @@ export interface ApprovalTransaction {
   fee: number;
   operations: number;
 }
+
+export interface FeeEstimateResponse {
+  baseFee: number;
+  recommendedFee: number;
+  surgeMultiplier: number;
+  maxFeeCap: number;
+  modeFee?: number;
+  p90Fee?: number;
+  minFee?: number;
+  maxFee?: number;
+  ledgerCapacityUsage?: number;
+}
+
+export interface FeeBumpRequest {
+  transactionXdr: string;
+  networkPassphrase?: string;
+  maxFee?: number;
+}
+
+export interface FeeBumpResponse {
+  success: boolean;
+  feeBumpTransactionXdr?: string;
+  transactionHash?: string;
+  fee?: number;
+  error?: string;
+}
+

@@ -168,5 +168,92 @@ describe('RelayerService', () => {
       const expected = 'approve|GCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC|GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB|100|USDC|GDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD|test-nonce|1234567890';
       expect(message).toBe(expected);
     });
+  describe('getFeeEstimate', () => {
+    it('should compute dynamic fee with surge multiplier and max fee cap', async () => {
+      const mockFeeStats = {
+        fee_charged: {
+          min: '100',
+          mode: '200',
+          p90: '300',
+          max: '1000',
+        },
+        ledger_capacity_usage: '0.85',
+      };
+
+      const { stellarService } = require('./stellar.service');
+      jest.spyOn(stellarService, 'getHorizonServer').mockReturnValue({
+        feeStats: jest.fn().mockResolvedValue(mockFeeStats),
+      } as any);
+
+      const estimate = await relayerService.getFeeEstimate();
+      expect(estimate.baseFee).toBe(100);
+      expect(estimate.modeFee).toBe(200);
+      expect(estimate.p90Fee).toBe(300);
+      // reference is 300, 300 * 1.2 = 360
+      expect(estimate.recommendedFee).toBe(360);
+      expect(estimate.surgeMultiplier).toBe(1.2);
+      expect(estimate.maxFeeCap).toBe(10000);
+      expect(estimate.ledgerCapacityUsage).toBe(0.85);
+    });
+
+    it('should respect custom surge multiplier override', async () => {
+      const mockFeeStats = {
+        fee_charged: {
+          min: '100',
+          mode: '150',
+          p90: '200',
+          max: '500',
+        },
+        ledger_capacity_usage: '0.90',
+      };
+
+      const { stellarService } = require('./stellar.service');
+      jest.spyOn(stellarService, 'getHorizonServer').mockReturnValue({
+        feeStats: jest.fn().mockResolvedValue(mockFeeStats),
+      } as any);
+
+      const estimate = await relayerService.getFeeEstimate(2.0);
+      expect(estimate.recommendedFee).toBe(400); // 200 * 2.0
+      expect(estimate.surgeMultiplier).toBe(2.0);
+    });
+
+    it('should enforce max fee cap protection', async () => {
+      const cappedService = new RelayerService({
+        ...mockRelayerConfig,
+        maxFeeCap: 500,
+        surgeMultiplier: 2.0,
+      });
+
+      const mockFeeStats = {
+        fee_charged: {
+          min: '100',
+          mode: '500',
+          p90: '1000',
+          max: '5000',
+        },
+        ledger_capacity_usage: '0.99',
+      };
+
+      const { stellarService } = require('./stellar.service');
+      jest.spyOn(stellarService, 'getHorizonServer').mockReturnValue({
+        feeStats: jest.fn().mockResolvedValue(mockFeeStats),
+      } as any);
+
+      const estimate = await cappedService.getFeeEstimate();
+      // 1000 * 2.0 = 2000 > maxFeeCap (500)
+      expect(estimate.recommendedFee).toBe(500);
+    });
+
+    it('should gracefully fallback when Horizon fee stats call fails', async () => {
+      const { stellarService } = require('./stellar.service');
+      jest.spyOn(stellarService, 'getHorizonServer').mockReturnValue({
+        feeStats: jest.fn().mockRejectedValue(new Error('Network error')),
+      } as any);
+
+      const estimate = await relayerService.getFeeEstimate();
+      expect(estimate.baseFee).toBe(100);
+      expect(estimate.recommendedFee).toBe(120); // 100 * 1.2
+    });
   });
 });
+

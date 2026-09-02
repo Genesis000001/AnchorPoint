@@ -1,0 +1,281 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`TransactionReceipt > matches its rendered layout snapshot 1`] = `
+<div
+  class="receipt-print"
+  data-testid="transaction-receipt"
+>
+  <div
+    class="no-print mb-4 flex items-center justify-end gap-2"
+  >
+    <button
+      class="action-button inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/50 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-text"
+      type="button"
+    >
+      <svg
+        aria-hidden="true"
+        class="lucide lucide-printer"
+        fill="none"
+        height="16"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="16"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"
+        />
+        <path
+          d="M6 9V3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v6"
+        />
+        <rect
+          height="8"
+          rx="1"
+          width="12"
+          x="6"
+          y="14"
+        />
+      </svg>
+      Print Receipt
+    </button>
+    <button
+      class="action-button inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800/50 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-text"
+      type="button"
+    >
+      <svg
+        aria-hidden="true"
+        class="lucide lucide-download"
+        fill="none"
+        height="16"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-width="2"
+        viewBox="0 0 24 24"
+        width="16"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"
+        />
+        <polyline
+          points="7 10 12 15 17 10"
+        />
+        <line
+          x1="12"
+          x2="12"
+          y1="15"
+          y2="3"
+        />
+      </svg>
+      Save Receipt
+    </button>
+  </div>
+  <div
+    class="glass-card p-6 sm:p-8"
+  >
+    <div
+      class="mb-6 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between"
+    >
+      <div>
+        <span
+          aria-label="Verified by AnchorPoint"
+          class="mb-2 inline-flex items-center gap-1.5 rounded-full border border-emerald-500/40 px-3 py-1 text-[11px] font-bold uppercase tracking-widest text-emerald-500"
+          role="img"
+        >
+          <svg
+            aria-hidden="true"
+            class="lucide lucide-anchor"
+            fill="none"
+            height="12"
+            stroke="currentColor"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            viewBox="0 0 24 24"
+            width="12"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              d="M12 22V8"
+            />
+            <path
+              d="M5 12H2a10 10 0 0 0 20 0h-3"
+            />
+            <circle
+              cx="12"
+              cy="5"
+              r="3"
+            />
+          </svg>
+          Verified by AnchorPoint
+        </span>
+        <h3
+          class="font-display text-xl font-bold text-slate-100"
+        >
+          Transaction Receipt
+        </h3>
+        <p
+          class="text-sm text-slate-400"
+        >
+          Deposit
+           — 
+          USDC
+        </p>
+      </div>
+      <span
+        class="inline-flex w-fit items-center rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-emerald-400"
+      >
+        Completed
+      </span>
+    </div>
+    <table
+      class="w-full text-left text-sm"
+    >
+      <tbody
+        class="divide-y divide-slate-700"
+      >
+        <tr>
+          <th
+            class="py-3 pr-4 font-medium text-slate-400"
+            scope="row"
+          >
+            Transaction ID
+          </th>
+          <td
+            class="py-3 font-mono text-slate-200"
+          >
+            tx-042
+          </td>
+        </tr>
+        <tr>
+          <th
+            class="py-3 pr-4 font-medium text-slate-400"
+            scope="row"
+          >
+            Tx Hash
+          </th>
+          <td
+            class="py-3 font-mono text-slate-200 break-all"
+          >
+            HASH-9F2C1A8B3D4E5F60718293A4B5C6D7E8F9A0B1C2D3E4F5061728394A5B6C7D8
+          </td>
+        </tr>
+        <tr>
+          <th
+            class="py-3 pr-4 font-medium text-slate-400"
+            scope="row"
+          >
+            Timestamp
+          </th>
+          <td
+            class="py-3 text-slate-200"
+          >
+            <time
+              datetime="2026-08-20"
+            >
+              2026-08-20
+            </time>
+          </td>
+        </tr>
+        <tr>
+          <th
+            class="py-3 pr-4 font-medium text-slate-400"
+            scope="row"
+          >
+            Type
+          </th>
+          <td
+            class="py-3 text-slate-200"
+          >
+            Deposit
+          </td>
+        </tr>
+        <tr>
+          <th
+            class="py-3 pr-4 font-medium text-slate-400"
+            scope="row"
+          >
+            Asset
+          </th>
+          <td
+            class="py-3 text-slate-200"
+          >
+            USDC
+          </td>
+        </tr>
+        <tr>
+          <th
+            class="py-3 pr-4 font-medium text-slate-400"
+            scope="row"
+          >
+            Amount
+          </th>
+          <td
+            class="py-3 font-mono text-slate-200"
+          >
+            $
+            1,250.00
+          </td>
+        </tr>
+        <tr>
+          <th
+            class="py-3 pr-4 font-medium text-slate-400"
+            scope="row"
+          >
+            Fees
+          </th>
+          <td
+            class="py-3 font-mono text-slate-200"
+          >
+            $12.50
+          </td>
+        </tr>
+        <tr>
+          <th
+            class="py-3 pr-4 font-medium text-slate-400"
+            scope="row"
+          >
+            Net Amount
+          </th>
+          <td
+            class="py-3 font-mono text-slate-200"
+          >
+            $
+            1,237.50
+          </td>
+        </tr>
+        <tr>
+          <th
+            class="py-3 pr-4 font-medium text-slate-400"
+            scope="row"
+          >
+            Anchor Signature
+          </th>
+          <td
+            class="py-3 font-mono text-xs text-slate-400 break-all"
+          >
+            SIG-8C4F2A7E9B1D5C6A
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <div
+      class="mt-6 text-xs text-slate-500"
+    >
+      <p>
+        This receipt was generated by AnchorPoint. For support, contact support@anchorpoint.local.
+      </p>
+      <p
+        class="mt-1"
+      >
+        Printed on 
+        2026-08-27
+      </p>
+    </div>
+  </div>
+</div>
+`;

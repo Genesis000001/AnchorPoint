@@ -20,7 +20,8 @@ describe('Auth Controller', () => {
     };
 
     mockRequest = {
-      body: {}
+      body: {},
+      query: {}
     };
 
     mockResponse = {
@@ -40,6 +41,31 @@ describe('Auth Controller', () => {
       expect(mockResponse.status).toHaveBeenCalledWith(400);
       expect(mockResponse.json).toHaveBeenCalledWith({
         error: 'account parameter is required'
+      });
+    });
+
+    it('generates a challenge from a GET query account', async () => {
+      mockRequest.body = {};
+      mockRequest.query = { account: 'GBAD_PUBLIC_KEY' };
+      (authService.generateChallenge as jest.Mock).mockReturnValue('test-challenge');
+      (authService.storeChallenge as jest.Mock).mockResolvedValue(undefined);
+      (authService.generateSep10ChallengeTransaction as jest.Mock).mockReturnValue({
+        transactionXdr: 'test-challenge',
+        networkPassphrase: 'Test SDF Network ; September 2015',
+      });
+      (authService.storeSep10Challenge as jest.Mock).mockResolvedValue(undefined);
+
+      await getChallenge(mockRequest as Request, mockResponse as Response, mockRedisService as RedisService);
+
+      expect(authService.storeChallenge).toHaveBeenCalledWith(
+        mockRedisService,
+        'GBAD_PUBLIC_KEY',
+        'test-challenge'
+      );
+      expect(mockResponse.json).toHaveBeenCalledWith({
+        transaction: 'test-challenge',
+        network_passphrase: 'Test SDF Network ; September 2015',
+        multiKeyChallenge: undefined
       });
     });
 

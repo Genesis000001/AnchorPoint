@@ -64,4 +64,17 @@ describe('Logger', () => {
     expect(() => logger.debug('Test debug message')).not.toThrow();
     expect(() => logger.error(new Error('Test error'))).not.toThrow();
   });
+
+  it('Issue #916: attaches correlationId to log info when active in tracing context', async () => {
+    const { correlationIdFormat } = await import('./logger');
+    const { tracingManager } = await import('./tracing');
+
+    const format = correlationIdFormat();
+    const result = tracingManager.runWithContext({ correlationId: 'corr-xyz-123' }, () => {
+      return format.transform({ level: 'info', message: 'Hello' }, {});
+    });
+
+    expect((result as any).correlationId).toBe('corr-xyz-123');
+  });
 });
+

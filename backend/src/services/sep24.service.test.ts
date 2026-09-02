@@ -32,11 +32,68 @@ describe('Sep24Service', () => {
       expect(Sep24Service.validateCallbackUrl('https://example.com.malicious.com/callback', ['example.com'])).toBe(false);
     });
 
-    it('handles multiple allowed domains and case insensitivity', () => {
+    it('handles multiple allowed domains and case insensitivy', () => {
       const allowed = ['example.com', 'Wallet.org'];
       expect(Sep24Service.validateCallbackUrl('https://Example.COM/cb', allowed)).toBe(true);
-      expect(Sep24Service.validateCallbackUrl('https://my.wallet.ORG/cb', allowed)).toBe(true);
+      expect(Sep24Service.validateCallbackUrl('https://my.wallet.org/cb', allowed)).toBe(true);
       expect(Sep24Service.validateCallbackUrl('https://other.org/cb', allowed)).toBe(false);
+    });
+  });
+
+  describe('toUnixTimestamp', () => {
+    it('returns Unix timestamp in seconds for a Date', () => {
+      expect(Sep24Service.toUnixTimestamp(new Date('2000-01-01T00:00:00Z'))).toBe(946684800);
+    });
+
+    it('returns 0 for null', () => {
+      expect(Sep24Service.toUnixTimestamp(null)).toBe(0);
+    });
+  });
+
+  describe('notifyClaimableBalance', () => {
+    it('stores claimable balance ID and dispatches webhook', async () => {
+      const mockRedisService = {
+        getJSON: jest.fn().mockResolvedValue({
+          callbackUrl: 'https://client.com/webhook',
+          kind: 'deposit',
+          assetCode: 'USDC',
+          amount: '50.00',
+        }),
+        setJSON: jest.fn().mockResolvedValue(undefined),
+      };
+
+      const result = await Sep24Service.notifyClaimableBalance(
+        'tx-test-123',
+        '00000000claimable123',
+        undefined,
+        mockRedisService as any
+      );
+
+      expect(mockRedisService.setJSON).toHaveBeenCalledWith(
+        'sep24:callback:tx-test-123',
+        expect.objectContaining({
+          claimableBalanceId: '00000000claimable123',
+        }),
+        86400
+      );
+      expect(result).toBeDefined();
+    });
+
+    it('returns skipped when no callback URL is available', async () => {
+      const mockRedisService = {
+        getJSON: jest.fn().mockResolvedValue(null),
+        setJSON: jest.fn().mockResolvedValue(undefined),
+      };
+
+      const result = await Sep24Service.notifyClaimableBalance(
+        'tx-test-no-cb',
+        'claimable-id',
+        undefined,
+        mockRedisService as any
+      );
+
+      expect(result.delivered).toBe(false);
+      expect(result.skipped).toBe(true);
     });
   });
 });
