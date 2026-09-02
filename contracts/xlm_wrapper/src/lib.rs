@@ -37,7 +37,21 @@ pub enum DataKey {
     Paused,
     /// Maximum total supply cap for wrapped tokens
     MaxSupply,
+    /// Per-account trustline count used when calculating the minimum reserve.
+    /// Stored as u32; defaults to 0 (only the base account reserve applies).
+    TrustlineCount(Address),
 }
+
+// ── Reserve constants ────────────────────────────────────────────────────────
+/// Base reserve per ledger entry in stroops (0.5 XLM = 5_000_000 stroops).
+/// Source: Stellar Core – each account needs at least 2 base reserves (1 XLM)
+/// for the account entry itself, plus 1 base reserve per additional trustline.
+const BASE_RESERVE_STROOPS: i128 = 5_000_000; // 0.5 XLM in stroops (7 decimals)
+
+/// Minimum number of base-reserve entries every account must hold.
+/// An unfunded account requires 2 reserves (the account entry counts as 2).
+const MIN_ACCOUNT_ENTRIES: i128 = 2;
+// ─────────────────────────────────────────────────────────────────────────────
 
 /// XLM Wrapper Contract
 #[contract]
@@ -74,21 +88,68 @@ impl XLMWrapper {
     }
 
     /// Deposit native XLM to mint wXLM tokens (1:1 ratio)
-    /// 
+    ///
+    /// Before transferring the XLM this function verifies that the depositor
+    /// will retain at least the Stellar network minimum reserve after the
+    /// deposit.  The minimum reserve is:
+    ///
+    ///   `(MIN_ACCOUNT_ENTRIES + trustline_count) × BASE_RESERVE_STROOPS`
+    ///
+    /// where `BASE_RESERVE_STROOPS` = 5_000_000 (0.5 XLM) and
+    /// `MIN_ACCOUNT_ENTRIES` = 2 (the base account entry requirement).
+    ///
+    /// If the requested `amount` would reduce the account's native XLM balance
+    /// below this threshold the call is rejected with
+    /// `"InsufficientReserve: deposit would violate minimum network reserve"`.
+    ///
     /// # Arguments
-    /// * `from` - Address depositing XLM
-    /// * `amount` - Amount of native XLM to deposit
-    /// 
+    /// * `from`   - Address depositing XLM
+    /// * `amount` - Amount of native XLM (in stroops) to deposit
+    ///
     /// # Returns
-    /// Amount of wXLM minted
+    /// Amount of wXLM minted (always equal to `amount` — 1:1 peg)
     pub fn deposit(env: Env, from: Address, amount: i128) -> i128 {
         from.require_auth();
-        
+
         Self::check_not_paused(&env);
         assert!(amount > 0, "amount must be positive");
-        
-        // Receive native XLM from user
-        let native_asset: Address = env.storage().instance().get(&DataKey::NativeAsset).expect("native asset not set");
+
+        // ── Minimum reserve check ────────────────────────────────────────────
+        // Fetch the depositor's current native XLM balance before transfer.
+        let native_asset: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::NativeAsset)
+            .expect("native asset not set");
+        let current_balance: i128 =
+            token::Client::new(&env, &native_asset).balance(&from);
+
+        // Additional trustlines held by this account (stored off-chain; default 0).
+        let trustline_count: i128 = env
+            .storage()
+            .instance()
+            .get::<_, u32>(&DataKey::TrustlineCount(from.clone()))
+            .unwrap_or(0) as i128;
+
+        // Minimum balance that must remain after the deposit.
+        let min_reserve: i128 = (MIN_ACCOUNT_ENTRIES + trustline_count)
+            .checked_mul(BASE_RESERVE_STROOPS)
+            .expect("reserve overflow");
+
+        // Available balance is what the account can safely spend without
+        // dropping below the network minimum reserve.
+        let available: i128 = current_balance.saturating_sub(min_reserve);
+
+        if amount > available {
+            panic!(
+                "InsufficientReserve: deposit would violate minimum network reserve \
+                 (available={}, requested={}, min_reserve={})",
+                available, amount, min_reserve
+            );
+        }
+        // ────────────────────────────────────────────────────────────────────
+
+        // Receive native XLM from user (reserve check already passed above).
         let contract_addr = env.current_contract_address();
         token::Client::new(&env, &native_asset)
             .transfer(&from, &contract_addr, &amount);
@@ -403,6 +464,55 @@ impl XLMWrapper {
     // Admin Functions
     // ============================================================================
 
+    /// Record the number of non-native trustlines held by an account so that
+    /// the reserve calculation inside `deposit` can account for them.
+    ///
+    /// In production this is typically called by a trusted oracle / relayer
+    /// whenever an account's trustline set changes.  Only the admin may call
+    /// this to prevent manipulation.
+    ///
+    /// # Arguments
+    /// * `admin`           - Administrator address
+    /// * `account`         - The account whose trustline count is being updated
+    /// * `trustline_count` - Number of non-native trustlines (≥ 0)
+    pub fn set_trustline_count(
+        env: Env,
+        admin: Address,
+        account: Address,
+        trustline_count: u32,
+    ) {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("admin not set");
+        assert!(admin == stored_admin, "unauthorized");
+
+        env.storage()
+            .instance()
+            .set(&DataKey::TrustlineCount(account.clone()), &trustline_count);
+
+        env.events()
+            .publish((symbol_short!("tl_count"), account), trustline_count);
+    }
+
+    /// Return the minimum XLM reserve (in stroops) that must remain in an
+    /// account after a deposit, given the stored trustline count.
+    ///
+    /// # Arguments
+    /// * `account` - The account to query
+    pub fn get_min_reserve(env: Env, account: Address) -> i128 {
+        let trustline_count: i128 = env
+            .storage()
+            .instance()
+            .get::<_, u32>(&DataKey::TrustlineCount(account))
+            .unwrap_or(0) as i128;
+        (MIN_ACCOUNT_ENTRIES + trustline_count)
+            .checked_mul(BASE_RESERVE_STROOPS)
+            .expect("reserve overflow")
+    }
+
     /// Set maximum total supply cap for wrapped tokens
     /// Pass `0` to remove the cap entirely.
     ///
@@ -536,7 +646,10 @@ mod tests {
     }
 
     fn fund_user(te: &TestEnv, user: &Address, amount: i128) {
-        te.sac.mint(user, &amount);
+        // Mint enough to cover the deposit PLUS the mandatory 2-entry base
+        // reserve (2 × 5_000_000 = 10_000_000 stroops) so that the minimum-
+        // reserve check inside deposit() does not reject the call.
+        te.sac.mint(user, &(amount + 10_000_000));
     }
 
     #[test]
@@ -810,6 +923,7 @@ mod tests {
         let user = Address::generate(&te.env);
         
         te.client.pause(&te.admin);
+        // The paused check fires before the reserve check, so any amount works.
         te.client.deposit(&user, &1000);
     }
 
@@ -882,6 +996,98 @@ mod tests {
         assert_eq!(te.client.balance_of(&user), 0);
         assert_eq!(te.client.total_supply(), 0);
     }
+
+    // ── Minimum reserve tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_deposit_respects_base_reserve() {
+        // BASE RESERVE = 2 × 5_000_000 = 10_000_000 stroops (1 XLM).
+        // Fund the user with exactly 1 XLM above the reserve so a deposit
+        // of that 1 XLM should succeed while a deposit of 1 stroop more fails.
+        let te = setup();
+        let user = Address::generate(&te.env);
+
+        // Fund with 20_000_000 (2 XLM).  Reserve = 10_000_000.  Available = 10_000_000.
+        fund_user(&te, &user, 20_000_000);
+
+        // Depositing exactly the available 10_000_000 stroops must succeed.
+        te.client.deposit(&user, &10_000_000);
+        assert_eq!(te.client.balance_of(&user), 10_000_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "InsufficientReserve")]
+    fn test_deposit_below_base_reserve_rejected() {
+        // Fund the user with exactly the minimum reserve (10_000_000) so
+        // they have zero available to deposit — any positive deposit must fail.
+        let te = setup();
+        let user = Address::generate(&te.env);
+
+        // Fund with exactly the base reserve amount.
+        fund_user(&te, &user, 10_000_000);
+
+        // Attempting to deposit 1 stroop would drop balance below min reserve.
+        te.client.deposit(&user, &1);
+    }
+
+    #[test]
+    #[should_panic(expected = "InsufficientReserve")]
+    fn test_deposit_exceeding_available_balance_rejected() {
+        // User has 15_000_000 stroops.  Reserve = 10_000_000.  Available = 5_000_000.
+        // Depositing 5_000_001 must fail.
+        let te = setup();
+        let user = Address::generate(&te.env);
+
+        fund_user(&te, &user, 15_000_000);
+        te.client.deposit(&user, &5_000_001);
+    }
+
+    #[test]
+    fn test_get_min_reserve_default() {
+        // Without any trustlines the minimum reserve should be
+        // 2 × BASE_RESERVE = 10_000_000 stroops.
+        let te = setup();
+        let user = Address::generate(&te.env);
+        assert_eq!(te.client.get_min_reserve(&user), 10_000_000);
+    }
+
+    #[test]
+    fn test_get_min_reserve_with_trustlines() {
+        // With 3 trustlines: (2 + 3) × 5_000_000 = 25_000_000 stroops.
+        let te = setup();
+        let user = Address::generate(&te.env);
+
+        te.client.set_trustline_count(&te.admin, &user, &3u32);
+        assert_eq!(te.client.get_min_reserve(&user), 25_000_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "InsufficientReserve")]
+    fn test_deposit_with_trustlines_enforces_higher_reserve() {
+        // Account has 3 trustlines: reserve = (2+3)×5_000_000 = 25_000_000.
+        // Fund with 30_000_000 → available = 5_000_000.
+        // Depositing 5_000_001 must fail.
+        let te = setup();
+        let user = Address::generate(&te.env);
+
+        te.client.set_trustline_count(&te.admin, &user, &3u32);
+        fund_user(&te, &user, 30_000_000);
+        te.client.deposit(&user, &5_000_001);
+    }
+
+    #[test]
+    fn test_deposit_with_trustlines_within_available() {
+        // Account has 2 trustlines: reserve = (2+2)×5_000_000 = 20_000_000.
+        // Fund with 30_000_000 → available = 10_000_000.
+        // Depositing exactly 10_000_000 must succeed.
+        let te = setup();
+        let user = Address::generate(&te.env);
+
+        te.client.set_trustline_count(&te.admin, &user, &2u32);
+        fund_user(&te, &user, 30_000_000);
+        te.client.deposit(&user, &10_000_000);
+        assert_eq!(te.client.balance_of(&user), 10_000_000);
+    }
 }
 
 /// ============================================================================
@@ -898,7 +1104,9 @@ mod invariants {
     use soroban_sdk::token::StellarAssetClient;
 
     fn fund_user(env: &Env, sac: &StellarAssetClient<'_>, user: &Address, amount: i128) {
-        sac.mint(user, &amount);
+        // Always mint amount + base reserve (10_000_000 stroops) so that the
+        // minimum-reserve guard inside deposit() does not reject the call.
+        sac.mint(user, &(amount + 10_000_000));
     }
 
     fn fund_and_deposit(env: &Env, sac: &StellarAssetClient<'_>, client: &XLMWrapperClient<'_>, user: &Address, amount: i128) {

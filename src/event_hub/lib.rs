@@ -12,10 +12,20 @@
 //! - Query event history for indexers
 
 use anchorpointutils::events::{emit_event, AnchorEvent, CrossContractEvent};
+use core::fmt::Write;
 use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short, Address, Bytes, Env, Map,
-    String as SorobanString, Vec,
+    String as SorobanString, Symbol, Vec,
 };
+
+// Helper to convert Symbol to SorobanString (no_std compatible)
+fn symbol_to_string(env: &Env, sym: &Symbol) -> SorobanString {
+    let mut buf = [0u8; 10];
+    let mut slice = &mut buf[..];
+    core::write!(slice, "{}", sym).unwrap();
+    let len = 10 - slice.len();
+    SorobanString::from_bytes(env, &buf[0..len])
+}
 
 const MAX_REGISTERED_CONTRACTS: usize = 100;
 
@@ -34,6 +44,35 @@ pub enum DataKey {
 }
 
 // ── Contract Types ──────────────────────────────────────────────────────────
+
+// Typed event structs for standardized event emission
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct HubInitializedEvent {
+    pub admin: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ContractRegisteredEvent {
+    pub contract: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ContractUnregisteredEvent {
+    pub contract: Address,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct EventCapturedEvent {
+    pub event_id: u64,
+    pub source_contract: Address,
+    pub timestamp: u64,
+    pub event_type: SorobanString,
+    pub event_data: Bytes,
+}
 
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -82,9 +121,18 @@ impl EventHub {
             anchorpointutils::storage::INSTANCE_EXTEND_TO,
         );
 
+        // Emit initialized event with standardized topic structure
+        // Topics: (event_hub, init, contract_address)
+        let hub_address = env.current_contract_address();
         #[allow(deprecated)]
-        env.events()
-            .publish((symbol_short!("hub"), symbol_short!("init")), admin);
+        env.events().publish(
+            (
+                Symbol::new(&env, "event_hub"),
+                symbol_short!("init"),
+                hub_address
+            ),
+            HubInitializedEvent { admin }
+        );
     }
 
     /// Register a new source contract with the Event Hub
@@ -111,9 +159,18 @@ impl EventHub {
             .instance()
             .set(&DataKey::RegisteredContracts, &contracts);
 
+        // Emit registered event with standardized topic structure
+        // Topics: (event_hub, reg, contract_address)
+        let hub_address = env.current_contract_address();
         #[allow(deprecated)]
-        env.events()
-            .publish((symbol_short!("hub"), symbol_short!("reg")), contract);
+        env.events().publish(
+            (
+                Symbol::new(&env, "event_hub"),
+                symbol_short!("reg"),
+                hub_address
+            ),
+            ContractRegisteredEvent { contract }
+        );
     }
 
     /// Unregister a source contract
@@ -136,9 +193,18 @@ impl EventHub {
             .instance()
             .set(&DataKey::RegisteredContracts, &contracts);
 
+        // Emit unregistered event with standardized topic structure
+        // Topics: (event_hub, unreg, contract_address)
+        let hub_address = env.current_contract_address();
         #[allow(deprecated)]
-        env.events()
-            .publish((symbol_short!("hub"), symbol_short!("unreg")), contract);
+        env.events().publish(
+            (
+                Symbol::new(&env, "event_hub"),
+                symbol_short!("unreg"),
+                hub_address
+            ),
+            ContractUnregisteredEvent { contract }
+        );
     }
 
     /// Check if a contract is registered
@@ -166,9 +232,11 @@ impl EventHub {
     pub fn capture_event(
         env: Env,
         source_contract: Address,
-        event_type: SorobanString,
+        event_type: Symbol,
         event_data: Bytes,
     ) {
+        // Convert Symbol to SorobanString for storage and backward compatibility
+        let event_type_str = symbol_to_string(&env, &event_type);
         // Verify source contract is registered
         let is_registered = Self::is_registered_source(&env, &source_contract);
         assert!(is_registered, "source contract not registered");
@@ -193,7 +261,7 @@ impl EventHub {
             id: new_counter,
             source_contract: source_contract.clone(),
             timestamp,
-            event_type: event_type.clone(),
+            event_type: event_type_str.clone(),
             event_data: event_data.clone(),
         };
 
@@ -203,12 +271,31 @@ impl EventHub {
 
         // Create and emit cross-contract event
         let cross_contract_event = CrossContractEvent {
-            source_contract,
+            source_contract: source_contract.clone(),
             timestamp,
-            event_data,
-            event_type,
+            event_data: event_data.clone(),
+            event_type: event_type_str.clone(),
         };
 
+        // Emit captured event with standardized topic structure
+        // Topics: (event_hub, event_type, source_contract_address)
+        #[allow(deprecated)]
+        env.events().publish(
+            (
+                Symbol::new(&env, "event_hub"),
+                event_type,
+                source_contract.clone()
+            ),
+            EventCapturedEvent {
+                event_id: new_counter,
+                source_contract: source_contract.clone(),
+                timestamp,
+                event_type: event_type_str.clone(),
+                event_data: event_data.clone(),
+            }
+        );
+
+        // Also emit the standard cross-contract event for backward compatibility
         emit_event(&env, AnchorEvent::CrossContractEvent(cross_contract_event));
     }
 
@@ -372,8 +459,8 @@ impl EventHub {
 mod tests {
     use super::*;
     use soroban_sdk::{
-        contract, contractimpl,
-        testutils::{storage::Instance as _, Address as AddressUtils, Ledger},
+        contract, contractimpl, IntoVal,
+        testutils::{storage::Instance as _, Address as AddressUtils, Events, Ledger},
     };
 
     #[contract]
@@ -384,7 +471,7 @@ mod tests {
         pub fn capture_to_hub(
             env: Env,
             hub: Address,
-            event_type: SorobanString,
+            event_type: Symbol,
             event_data: Bytes,
         ) {
             let source_contract = env.current_contract_address();
@@ -451,7 +538,7 @@ mod tests {
         let source_contract = Address::generate(&env);
         client.register_contract(&admin, &source_contract);
 
-        let event_type = SorobanString::from_str(&env, "transfer");
+        let event_type = Symbol::new(&env, "transfer");
         let event_data = Bytes::from_slice(&env, b"test_event_data");
 
         client.capture_event(&source_contract, &event_type, &event_data);
@@ -463,7 +550,9 @@ mod tests {
 
         let event = events.get(0).unwrap();
         assert_eq!(event.source_contract, source_contract);
-        assert_eq!(event.event_type, event_type);
+        // Convert Symbol to SorobanString to match storage format
+        let event_type_str = symbol_to_string(&env, &event_type);
+        assert_eq!(event.event_type, event_type_str);
         assert_eq!(event.event_data, event_data);
     }
 
@@ -487,14 +576,16 @@ mod tests {
         // through Soroban's direct contract-invoker auth path.
         env.set_auths(&[]);
 
-        let event_type = SorobanString::from_str(&env, "transfer");
+        let event_type = Symbol::new(&env, "transfer");
         let event_data = Bytes::from_slice(&env, b"test_event_data");
         source_client.capture_to_hub(&hub_id, &event_type, &event_data);
 
         assert_eq!(hub_client.get_event_count(), 1);
         let event = hub_client.get_event(&1);
         assert_eq!(event.source_contract, source_id);
-        assert_eq!(event.event_type, event_type);
+        // Convert Symbol to SorobanString to match storage format
+        let event_type_str = symbol_to_string(&env, &event_type);
+        assert_eq!(event.event_type, event_type_str);
         assert_eq!(event.event_data, event_data);
     }
 
@@ -532,7 +623,7 @@ mod tests {
         client.register_contract(&admin, &contract1);
         client.register_contract(&admin, &contract2);
 
-        let event_type = SorobanString::from_str(&env, "transfer");
+        let event_type = Symbol::new(&env, "transfer");
         let event_data = Bytes::from_slice(&env, b"data");
 
         client.capture_event(&contract1, &event_type, &event_data);
@@ -575,12 +666,89 @@ mod tests {
         client.initialize(&admin);
 
         let unregistered = Address::generate(&env);
-        let event_type = SorobanString::from_str(&env, "transfer");
+        let event_type = Symbol::new(&env, "transfer");
         let event_data = Bytes::from_slice(&env, b"data");
         client.capture_event(&unregistered, &event_type, &event_data);
     }
 
     // ── get_event by ID ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_event_topic_indexing_compliance() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000_000u64);
+
+        let contract_id = env.register(EventHub, ());
+        let client = EventHubClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        // Verify initialize event has correct topics: (event_hub, init, hub_address)
+        let events = env.events().all();
+        assert_eq!(events.len(), 1);
+        let (emitter, topics, data) = events.get(0).unwrap();
+        assert_eq!(emitter, contract_id);
+        assert_eq!(topics.len(), 3);
+        assert_eq!(topics.get(0).unwrap(), Symbol::new(&env, "event_hub").into_val(&env));
+        assert_eq!(topics.get(1).unwrap(), symbol_short!("init").into_val(&env));
+        assert_eq!(topics.get(2).unwrap(), contract_id.clone().into_val(&env));
+        
+        // Verify the data is the correct HubInitializedEvent struct
+        let init_event: HubInitializedEvent = data.into_val(&env);
+        assert_eq!(init_event.admin, admin);
+
+        // Register a source contract
+        let source_contract = Address::generate(&env);
+        client.register_contract(&admin, &source_contract);
+
+        // Verify register event has correct topics: (event_hub, reg, hub_address)
+        let events = env.events().all();
+        assert_eq!(events.len(), 2);
+        let (emitter, topics, data) = events.get(1).unwrap();
+        assert_eq!(emitter, contract_id);
+        assert_eq!(topics.len(), 3);
+        assert_eq!(topics.get(0).unwrap(), Symbol::new(&env, "event_hub").into_val(&env));
+        assert_eq!(topics.get(1).unwrap(), symbol_short!("reg").into_val(&env));
+        assert_eq!(topics.get(2).unwrap(), contract_id.clone().into_val(&env));
+
+        // Capture an event
+        let event_type = Symbol::new(&env, "transfer");
+        let event_data = Bytes::from_slice(&env, b"test_event_data");
+        client.capture_event(&source_contract, &event_type, &event_data);
+
+        // Verify captured event has correct topics: (event_hub, transfer, source_contract)
+        let events = env.events().all();
+        assert_eq!(events.len(), 4); // init, reg, our new capture event, and the cross-contract event
+        let (emitter, topics, data) = events.get(2).unwrap();
+        assert_eq!(emitter, contract_id);
+        assert_eq!(topics.len(), 3);
+        assert_eq!(topics.get(0).unwrap(), Symbol::new(&env, "event_hub").into_val(&env));
+        assert_eq!(topics.get(1).unwrap(), Symbol::new(&env, "transfer").into_val(&env));
+        assert_eq!(topics.get(2).unwrap(), source_contract.clone().into_val(&env));
+        
+        // Verify the data is the correct EventCapturedEvent struct
+        let captured_event: EventCapturedEvent = data.into_val(&env);
+        assert_eq!(captured_event.event_id, 1);
+        assert_eq!(captured_event.source_contract, source_contract);
+        assert_eq!(captured_event.timestamp, 1_000_000u64);
+        assert_eq!(captured_event.event_type, event_type);
+        assert_eq!(captured_event.event_data, event_data);
+
+        // Unregister the contract
+        client.unregister_contract(&admin, &source_contract);
+
+        // Verify unregister event has correct topics: (event_hub, unreg, hub_address)
+        let events = env.events().all();
+        assert_eq!(events.len(), 5);
+        let (emitter, topics, data) = events.get(4).unwrap();
+        assert_eq!(emitter, contract_id);
+        assert_eq!(topics.len(), 3);
+        assert_eq!(topics.get(0).unwrap(), Symbol::new(&env, "event_hub").into_val(&env));
+        assert_eq!(topics.get(1).unwrap(), symbol_short!("unreg").into_val(&env));
+        assert_eq!(topics.get(2).unwrap(), contract_id.clone().into_val(&env));
+    }
 
     #[test]
     fn test_get_event_by_id() {
@@ -597,14 +765,16 @@ mod tests {
         let source = Address::generate(&env);
         client.register_contract(&admin, &source);
 
-        let event_type = SorobanString::from_str(&env, "stake");
+        let event_type = Symbol::new(&env, "stake");
         let event_data = Bytes::from_slice(&env, b"payload");
         client.capture_event(&source, &event_type, &event_data);
 
         let entry = client.get_event(&1u64);
         assert_eq!(entry.id, 1u64);
         assert_eq!(entry.source_contract, source);
-        assert_eq!(entry.event_type, event_type);
+        // Convert Symbol to SorobanString to match storage format
+        let event_type_str = symbol_to_string(&env, &event_type);
+        assert_eq!(entry.event_type, event_type_str);
         assert_eq!(entry.event_data, event_data);
         assert_eq!(entry.timestamp, 2_000_000u64);
     }
@@ -640,7 +810,7 @@ mod tests {
         let source = Address::generate(&env);
         client.register_contract(&admin, &source);
 
-        let event_type = SorobanString::from_str(&env, "tx");
+        let event_type = Symbol::new(&env, "tx");
         let event_data = Bytes::from_slice(&env, b"d");
 
         client.capture_event(&source, &event_type, &event_data);
@@ -669,7 +839,7 @@ mod tests {
         let source = Address::generate(&env);
         client.register_contract(&admin, &source);
 
-        let event_type = SorobanString::from_str(&env, "evt");
+        let event_type = Symbol::new(&env, "evt");
         let event_data = Bytes::from_slice(&env, b"data");
 
         for _ in 0..5 {
@@ -775,7 +945,7 @@ mod tests {
         client.register_contract(&admin, &source);
         client.unregister_contract(&admin, &source);
 
-        let event_type = SorobanString::from_str(&env, "transfer");
+        let event_type = Symbol::new(&env, "transfer");
         let event_data = Bytes::from_slice(&env, b"data");
         // Should panic — contract was unregistered
         client.capture_event(&source, &event_type, &event_data);

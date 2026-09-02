@@ -10,7 +10,7 @@ import {
 import prisma from '../../lib/prisma';
 import { isValidStellarPublicKey } from '../../utils/stellar-address';
 import { sep24MetricsMiddleware } from '../middleware/sep24-metrics.middleware';
-import { Sep24Service } from '../../services/sep24.service';
+import { Sep24Service, Sep24MemoType } from '../../services/sep24.service';
 
 const router = Router();
 
@@ -37,6 +37,25 @@ interface InteractiveRequest {
   redirect_url?: string;
   on_change_callback?: string;
   callback?: string;
+  memo?: string;
+  memo_type?: string;
+}
+
+const VALID_MEMO_TYPES: Sep24MemoType[] = ['text', 'id', 'hash'];
+
+function validateMemoFields(memo: string | undefined, memoType: string | undefined): string | null {
+  if (memo === undefined) return null;
+
+  const resolvedMemoType = memoType ?? 'text';
+  if (!VALID_MEMO_TYPES.includes(resolvedMemoType as Sep24MemoType)) {
+    return 'memo_type must be one of text, id, hash';
+  }
+
+  if (!Sep24Service.validateMemo(memo, resolvedMemoType as Sep24MemoType)) {
+    return `memo is invalid for memo_type ${resolvedMemoType}`;
+  }
+
+  return null;
 }
 
 interface InteractiveResponse {
@@ -58,36 +77,42 @@ const getBaseInteractiveUrl = (): string => process.env.INTERACTIVE_URL || 'http
 const hasInvalidAccount = (account: unknown): boolean =>
   account !== undefined && !isValidStellarPublicKey(account);
 
+// Helper to convert Date to Unix epoch seconds
+const toEpochSeconds = (date: Date | null | undefined): number | null => {
+  if (date === null || date === undefined) return null;
+  return Math.floor(date.getTime() / 1000);
+};
+
 /**
  * @swagger
  * /sep24/transactions/deposit/interactive:
- *   post:
- *     summary: Interactive Deposit
- *     description: SEP-24 Interactive Deposit Endpoint. Returns a URL for the user to complete KYC/Deposit.
- *     tags: [SEP-24]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - asset_code
- *             properties:
- *               asset_code:
- *                 type: string
- *                 description: Asset code to deposit (e.g., USDC, USD, BTC, ETH)
- *                 example: USDC
- *               account:
- *                 type: string
- *                 description: Stellar Ed25519 public key (G...)
- *               amount:
- *                 type: string
- *                 description: Amount to deposit
- *               lang:
- *                 type: string
- *                 description: Language preference for the UI
- *                 default: en
+ * post:
+ * summary: Interactive Deposit
+ * description: SEP-24 Interactive Deposit Endpoint. Returns a URL for the user to complete KYC/Deposit.
+ * tags: [SEP-24]
+ * requestBody:
+ *   required: true
+ *   content:
+ *     application/json:
+ *       schema:
+ *         type: object
+ *         required:
+ *           - asset_code
+ *         properties:
+ *           asset_code:
+ *             type: string
+ *             description: Asset code to deposit (e.g., USDC, USD, BTC, ETH)
+ *             example: USDC
+ *           account:
+ *             type: string
+ *             description: Stellar Ed25519 public key (G...)
+ *           amount:
+ *             type: string
+ *             description: Amount to deposit
+ *           lang:
+ *             type: string
+ *             description: Language preference for the UI
+ *             default: en
  *     responses:
  *       200:
  *         description: Interactive deposit URL generated
@@ -109,7 +134,7 @@ const hasInvalidAccount = (account: unknown): boolean =>
  *         description: Invalid request parameters
  */
 router.post('/transactions/deposit/interactive', async (req: Request, res: Response) => {
-  const { asset_code, account, amount, lang = 'en', quote_id, redirect_url, on_change_callback, callback }: InteractiveRequest = req.body;
+  const { asset_code, account, amount, lang = 'en', quote_id, redirect_url, on_change_callback, callback, memo, memo_type }: InteractiveRequest = req.body;
 
   const allowedDomains = process.env.SEP24_ALLOWED_CALLBACK_DOMAINS
     ? process.env.SEP24_ALLOWED_CALLBACK_DOMAINS.split(',').filter(Boolean)
@@ -121,6 +146,11 @@ router.post('/transactions/deposit/interactive', async (req: Request, res: Respo
 
   if (on_change_callback && allowedDomains.length > 0 && !Sep24Service.validateCallbackUrl(on_change_callback, allowedDomains)) {
     return res.status(400).json({ error: 'invalid on_change_callback domain' });
+  }
+
+  const memoError = validateMemoFields(memo, memo_type);
+  if (memoError) {
+    return res.status(400).json({ error: memoError });
   }
 
   if (!asset_code) {
@@ -184,33 +214,33 @@ router.post('/transactions/deposit/interactive', async (req: Request, res: Respo
 /**
  * @swagger
  * /sep24/transactions/withdraw/interactive:
- *   post:
- *     summary: Interactive Withdrawal
- *     description: SEP-24 Interactive Withdraw Endpoint. Returns a URL for the user to complete KYC/Withdraw.
- *     tags: [SEP-24]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - asset_code
- *             properties:
- *               asset_code:
- *                 type: string
- *                 description: Asset code to withdraw (e.g., USDC, USD, BTC, ETH)
- *                 example: USDC
- *               account:
- *                 type: string
- *                 description: Destination Stellar Ed25519 public key (G...)
- *               amount:
- *                 type: string
- *                 description: Amount to withdraw
- *               lang:
- *                 type: string
- *                 description: Language preference for the UI
- *                 default: en
+ * post:
+ * summary: Interactive Withdrawal
+ * description: SEP-24 Interactive Withdraw Endpoint. Returns a URL for the user to complete KYC/Withdraw.
+ * tags: [SEP-24]
+ * requestBody:
+ *   required: true
+ *   content:
+ *     application/json:
+ *       schema:
+ *         type: object
+ *         required:
+ *           - asset_code
+ *         properties:
+ *           asset_code:
+ *             type: string
+ *             description: Asset code to withdraw (e.g., USDC, USD, BTC, ETH)
+ *               example: USDC
+ *           account:
+ *             type: string
+ *             description: Destination Stellar Ed25519 public key (G...)
+ *           amount:
+ *             type: string
+ *             description: Amount to withdraw
+ *           lang:
+ *             type: string
+ *             description: Language preference for the UI
+ *             default: en
  *     responses:
  *       200:
  *         description: Interactive withdrawal URL generated
@@ -224,7 +254,7 @@ router.post('/transactions/deposit/interactive', async (req: Request, res: Respo
  *                   example: interactive_customer_info_needed
  *                 url:
  *                   type: string
- *                   description: URL for user to complete withdrawal
+ *                   description: URL for user to complete withdraw
  *                 id:
  *                   type: string
  *                   description: Unique transaction identifier
@@ -232,7 +262,7 @@ router.post('/transactions/deposit/interactive', async (req: Request, res: Respo
  *         description: Invalid request parameters
  */
 router.post('/transactions/withdraw/interactive', async (req: Request, res: Response) => {
-  const { asset_code, account, amount, lang = 'en', quote_id, redirect_url, on_change_callback, callback }: InteractiveRequest = req.body;
+  const { asset_code, account, amount, lang = 'en', quote_id, redirect_url, on_change_callback, callback, memo, memo_type }: InteractiveRequest = req.body;
 
   const allowedDomains = process.env.SEP24_ALLOWED_CALLBACK_DOMAINS
     ? process.env.SEP24_ALLOWED_CALLBACK_DOMAINS.split(',').filter(Boolean)
@@ -244,6 +274,11 @@ router.post('/transactions/withdraw/interactive', async (req: Request, res: Resp
 
   if (on_change_callback && allowedDomains.length > 0 && !Sep24Service.validateCallbackUrl(on_change_callback, allowedDomains)) {
     return res.status(400).json({ error: 'invalid on_change_callback domain' });
+  }
+
+  const memoError = validateMemoFields(memo, memo_type);
+  if (memoError) {
+    return res.status(400).json({ error: memoError });
   }
 
   if (!asset_code) {
@@ -307,26 +342,26 @@ router.post('/transactions/withdraw/interactive', async (req: Request, res: Resp
 /**
  * @swagger
  * /sep24/transaction:
- *   get:
- *     summary: SEP-24 Transaction Status
- *     description: SEP-24 Transaction Status Endpoint. Returns details of a specific transaction by id, stellar_transaction_id, or external_transaction_id.
- *     tags: [SEP-24]
- *     parameters:
- *       - in: query
- *         name: id
- *         schema:
- *           type: string
- *         description: Anchor transaction ID
- *       - in: query
- *         name: stellar_transaction_id
- *         schema:
- *           type: string
- *         description: Stellar transaction hash
- *       - in: query
- *         name: external_transaction_id
- *         schema:
- *           type: string
- *         description: External transaction ID
+ * get:
+ * summary: SEP-24 Transaction Status
+ * description: SEP-24 Transaction Status Endpoint. Returns details of a specific transaction by id, stellar_transaction_id, or external_transaction_id.
+ * tags: [SEP-24]
+ * parameters:
+ *   - in: query
+ *     name: id
+ *     schema:
+ *       type: string
+ *     description: Anchor transaction ID
+ *   - in: query
+ *     name: stellar_transaction_id
+ *     schema:
+ *       type: string
+ *     description: Stellar transaction hash
+ *   - in: query
+ *     name: external_transaction_id
+ *     schema:
+ *       type: string
+ *       description: External transaction ID
  *     responses:
  *       200:
  *         description: Transaction details
@@ -364,19 +399,20 @@ router.get('/transaction', async (req: Request, res: Response) => {
     const stored = await Sep24Service.getCallback(transaction.id);
     const validHash: string = stellarTxHash;
 
+    const startedAt = toEpochSeconds(transaction.startedAt);
+    const completedAt = toEpochSeconds(transaction.completedAt);
+
     return res.json({
       transaction: {
         id: transaction.id,
         kind: transaction.type.toLowerCase(),
         status: transaction.status.toLowerCase(),
         amount_in: transaction.type === 'DEPOSIT' ? transaction.amount : undefined,
-        amount_out: transaction.type === 'WITHDRAW' ? transaction.amount : undefined,
-        asset_code: transaction.assetCode,
+        started_at: startedAt ?? 0,
+        ...(completedAt !== null ? { completed_at: completedAt } : {}),
         stellar_transaction_id: validHash,
         external_transaction_id: transaction.externalId ?? undefined,
         claimable_balance_id: stored?.claimableBalanceId ?? (transaction as any).claimableBalanceId ?? undefined,
-        started_at: transaction.createdAt.toISOString(),
-        completed_at: transaction.status === 'COMPLETED' ? transaction.updatedAt.toISOString() : undefined,
       },
     });
   } catch (error) {
@@ -493,6 +529,4 @@ router.patch('/transactions/:id/status', async (req: Request, res: Response) => 
   });
 });
 
-
 export default router;
-

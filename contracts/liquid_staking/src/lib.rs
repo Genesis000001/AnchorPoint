@@ -25,6 +25,7 @@ pub enum Error {
     RewardsOverflow = 11,
     AdminNotFound = 12,
     OnlyAdmin = 13,
+    MetadataUriTooLong = 14,
 }
 
 
@@ -35,6 +36,12 @@ const MAX_BPS: i128 = 10_000;
 
 /// Default emergency-withdraw penalty in basis points (10% = 1_000 bps).
 const DEFAULT_EMERGENCY_FEE_BPS: i128 = 1_000;
+
+/// Maximum length, in bytes, of any metadata URI or description string.
+///
+/// Bounds the storage rental a single metadata update can commit the
+/// contract to, and keeps values within a size integrators can handle.
+const MAX_METADATA_LEN: u32 = 256;
 
 #[contracttype]
 pub enum DataKey {
@@ -593,6 +600,10 @@ impl LiquidStaking {
     /// * `description` – New human-readable description
     /// * `icon_url`    – New icon / logo URL
     /// * `website`     – New project website URL
+    /// Update the contract branding metadata.
+    ///
+    /// Admin only. Every field is length-bounded to MAX_METADATA_LEN bytes so
+    /// a single update cannot commit the contract to unbounded storage rental.
     pub fn update_contract_meta(
         env: Env,
         caller: Address,
@@ -611,10 +622,27 @@ impl LiquidStaking {
             panic_with_error!(env, Error::OnlyAdmin);
         }
 
-        let meta = ContractMetadata { description, icon_url, website };
+        if description.len() > MAX_METADATA_LEN
+            || icon_url.len() > MAX_METADATA_LEN
+            || website.len() > MAX_METADATA_LEN
+        {
+            panic_with_error!(env, Error::MetadataUriTooLong);
+        }
+
+        let meta = ContractMetadata {
+            description,
+            icon_url,
+            website,
+        };
         env.storage().instance().set(&DataKey::ContractMeta, &meta);
 
-        env.events().publish((symbol_short!("meta_upd"),), meta);
+        // Topic: event name; data: the new icon URI followed by the full
+        // metadata. The URI leads so subscribers get MetadataUpdated(new_uri)
+        // directly, while existing consumers of the whole struct still work.
+        env.events().publish(
+            (symbol_short!("meta_upd"),),
+            (meta.icon_url.clone(), meta),
+        );
     }
 
     /// Return the current contract branding metadata.
@@ -720,9 +748,9 @@ fn u64_to_string(env: &Env, mut n: u64) -> String {
 mod tests {
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as _, Ledger},
+        testutils::{Address as _, Events, Ledger},
         token::{Client as TokenClient, StellarAssetClient},
-        Address, Env, IntoVal, String,
+        Address, Env, IntoVal, String, TryFromVal,
     };
     
     // Using the imported Rust crate directly for tests
@@ -1105,6 +1133,170 @@ mod tests {
         assert_eq!(reward_client.balance(&bob), 4_000);
     }
 
+
+    // -- Metadata update authorization & validation ---------------------------
+
+    /// Build a String of exactly `n` ASCII bytes.
+    fn string_of_len(env: &Env, n: usize) -> String {
+        let filler = "a".repeat(n);
+        String::from_str(env, &filler)
+    }
+
+    #[test]
+    #[should_panic(expected = "HostError: Error(Contract, #13)")]
+    fn test_metadata_update_rejects_unauthorized_caller() {
+        let (env, ls_id, _, _, alice, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        // A staker is not the admin and must not be able to rebrand the
+        // contract.
+        client.update_contract_meta(
+            &alice,
+            &String::from_str(&env, "hijacked"),
+            &String::from_str(&env, "https://evil.example/icon.png"),
+            &String::from_str(&env, "https://evil.example"),
+        );
+    }
+
+    #[test]
+    fn test_metadata_update_rejected_caller_leaves_state_untouched() {
+        let (env, ls_id, _, admin, alice, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        client.update_contract_meta(
+            &admin,
+            &String::from_str(&env, "official"),
+            &String::from_str(&env, "https://example.com/icon.png"),
+            &String::from_str(&env, "https://example.com"),
+        );
+
+        let attempt = client.try_update_contract_meta(
+            &alice,
+            &String::from_str(&env, "hijacked"),
+            &String::from_str(&env, "https://evil.example/icon.png"),
+            &String::from_str(&env, "https://evil.example"),
+        );
+        assert!(attempt.is_err());
+
+        // The admin's metadata must survive the failed attempt.
+        let meta = client.get_contract_meta();
+        assert_eq!(meta.description, String::from_str(&env, "official"));
+        assert_eq!(
+            meta.icon_url,
+            String::from_str(&env, "https://example.com/icon.png")
+        );
+    }
+
+    #[test]
+    fn test_metadata_accepts_uri_at_max_length() {
+        let (env, ls_id, _, admin, _, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        // MAX_METADATA_LEN is the inclusive upper bound.
+        let uri = string_of_len(&env, MAX_METADATA_LEN as usize);
+        client.update_contract_meta(
+            &admin,
+            &String::from_str(&env, "ok"),
+            &uri,
+            &String::from_str(&env, "https://example.com"),
+        );
+
+        assert_eq!(client.get_contract_meta().icon_url.len(), MAX_METADATA_LEN);
+    }
+
+    #[test]
+    #[should_panic(expected = "HostError: Error(Contract, #14)")]
+    fn test_metadata_rejects_icon_url_over_max_length() {
+        let (env, ls_id, _, admin, _, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        let uri = string_of_len(&env, MAX_METADATA_LEN as usize + 1);
+        client.update_contract_meta(
+            &admin,
+            &String::from_str(&env, "ok"),
+            &uri,
+            &String::from_str(&env, "https://example.com"),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "HostError: Error(Contract, #14)")]
+    fn test_metadata_rejects_website_over_max_length() {
+        let (env, ls_id, _, admin, _, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        let website = string_of_len(&env, MAX_METADATA_LEN as usize + 1);
+        client.update_contract_meta(
+            &admin,
+            &String::from_str(&env, "ok"),
+            &String::from_str(&env, "https://example.com/icon.png"),
+            &website,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "HostError: Error(Contract, #14)")]
+    fn test_metadata_rejects_description_over_max_length() {
+        let (env, ls_id, _, admin, _, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        let description = string_of_len(&env, MAX_METADATA_LEN as usize + 1);
+        client.update_contract_meta(
+            &admin,
+            &description,
+            &String::from_str(&env, "https://example.com/icon.png"),
+            &String::from_str(&env, "https://example.com"),
+        );
+    }
+
+    #[test]
+    fn test_metadata_oversized_update_leaves_state_untouched() {
+        let (env, ls_id, _, admin, _, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        client.update_contract_meta(
+            &admin,
+            &String::from_str(&env, "official"),
+            &String::from_str(&env, "https://example.com/icon.png"),
+            &String::from_str(&env, "https://example.com"),
+        );
+
+        let oversized = string_of_len(&env, MAX_METADATA_LEN as usize + 1);
+        assert!(client
+            .try_update_contract_meta(
+                &admin,
+                &String::from_str(&env, "new"),
+                &oversized,
+                &String::from_str(&env, "https://example.com"),
+            )
+            .is_err());
+
+        assert_eq!(
+            client.get_contract_meta().icon_url,
+            String::from_str(&env, "https://example.com/icon.png")
+        );
+    }
+
+    #[test]
+    fn test_metadata_update_emits_event() {
+        let (env, ls_id, _, admin, _, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        let before = env.events().all().len();
+        client.update_contract_meta(
+            &admin,
+            &String::from_str(&env, "official"),
+            &String::from_str(&env, "https://example.com/icon.png"),
+            &String::from_str(&env, "https://example.com"),
+        );
+        let after = env.events().all().len();
+
+        assert!(
+            after > before,
+            "update_contract_meta must emit a MetadataUpdated event"
+        );
+    }
+
     #[test]
     fn test_nft_attributes() {
 
@@ -1137,6 +1329,105 @@ mod tests {
         // After claim, sync is called, but rewards were just claimed, so it should be "0" again
         let metadata_after = nft_client.get_metadata(&token_id);
         assert_eq!(metadata_after.attributes.get(2).unwrap().value, String::from_str(&env, "0"));
+    }
+
+    // ── String conversion helper edge cases (mutation testing) ────────────
+
+    #[test]
+    fn test_i128_to_string_helper() {
+        let env = Env::default();
+        assert_eq!(i128_to_string(&env, 0), String::from_str(&env, "0"));
+        assert_eq!(i128_to_string(&env, 123), String::from_str(&env, "123"));
+        assert_eq!(i128_to_string(&env, 500_000), String::from_str(&env, "500000"));
+        // Negative numbers exercise the sign-handling branch
+        assert_eq!(i128_to_string(&env, -123), String::from_str(&env, "-123"));
+        assert_eq!(i128_to_string(&env, -500_000), String::from_str(&env, "-500000"));
+    }
+
+    #[test]
+    fn test_u64_to_string_helper() {
+        let env = Env::default();
+        assert_eq!(u64_to_string(&env, 0), String::from_str(&env, "0"));
+        assert_eq!(u64_to_string(&env, 123), String::from_str(&env, "123"));
+        assert_eq!(u64_to_string(&env, 3_600), String::from_str(&env, "3600"));
+    }
+
+    // ── Edge cases around zero amounts (mutation testing) ──────────────────
+
+    #[test]
+    fn test_deposit_rewards_with_no_stake() {
+        let (env, ls_id, _, admin, _, _, reward_token) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        // Nobody has staked yet: the deposit must be accepted without touching
+        // the reward-per-token accumulator (which would divide by zero).
+        client.deposit_rewards(&admin, &1_000);
+
+        let reward_client = TokenClient::new(&env, &reward_token);
+        assert_eq!(reward_client.balance(&admin), 10_000_000 - 1_000);
+        assert_eq!(reward_client.balance(&ls_id), 1_000);
+        assert_eq!(client.get_stake_info(&1).pending_rewards, 0);
+    }
+
+    #[test]
+    fn test_unstake_with_zero_rewards() {
+        let (env, ls_id, _, admin, alice, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        let token_id = client.stake(&alice, &500_000, &0);
+
+        // No rewards were deposited: unstake returns the principal and nothing else.
+        client.unstake(&alice, &token_id);
+
+        let stake_token: Address = env.as_contract(&ls_id, || {
+            env.storage().instance().get(&DataKey::StakeToken).unwrap()
+        });
+        let token_client = TokenClient::new(&env, &stake_token);
+        assert_eq!(token_client.balance(&alice), 1_000_000);
+        assert_eq!(token_client.balance(&ls_id), 0);
+    }
+
+    #[test]
+    fn test_claim_zero_rewards_emits_no_claim_event() {
+        let (env, ls_id, _, _, alice, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        let token_id = client.stake(&alice, &500_000, &0);
+
+        // No rewards were deposited: claim returns 0 and must not emit a claim event.
+        let claimed = client.claim(&alice, &token_id);
+        assert_eq!(claimed, 0);
+
+        let claim_events = env
+            .events()
+            .all()
+            .iter()
+            .filter(|(_, topics, _)| {
+                topics.first().is_some_and(|t| {
+                    Symbol::try_from_val(&env, &t).ok() == Some(symbol_short!("claimed"))
+                })
+            })
+            .count();
+        assert_eq!(claim_events, 0);
+    }
+
+    #[test]
+    fn test_emergency_withdraw_with_zero_fee() {
+        let (env, ls_id, _, admin, alice, _, _) = setup();
+        let client = LiquidStakingClient::new(&env, &ls_id);
+
+        // Zero emergency fee: the full stake is returned and nothing goes to admin.
+        client.set_emergency_fee(&admin, &0);
+        let token_id = client.stake(&alice, &500_000, &3600);
+        client.pause(&admin);
+        client.emergency_withdraw(&alice, &token_id);
+
+        let stake_token: Address = env.as_contract(&ls_id, || {
+            env.storage().instance().get(&DataKey::StakeToken).unwrap()
+        });
+        let token_client = TokenClient::new(&env, &stake_token);
+        assert_eq!(token_client.balance(&alice), 1_000_000);
+        assert_eq!(token_client.balance(&admin), 0);
     }
 
     // ── Reentrancy guard tests ──────────────────────────────────────────────
