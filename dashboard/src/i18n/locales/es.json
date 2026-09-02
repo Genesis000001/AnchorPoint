@@ -22,6 +22,99 @@
     "label": "Idioma",
     "en": "English",
     "es": "Español",
-    "pt": "Português"
+    "pt": "Português",
+    "fr": "Français"
+  },
+  "deposit": {
+    "formAriaLabel": "Formulario de detalles del depósito de {{asset}}",
+    "required": "Obligatorio",
+    "optional": "Opcional",
+    "submit": "Continuar a la verificación",
+    "errors": {
+      "required": "{{label}} es obligatorio.",
+      "amountInvalid": "Ingrese un monto válido con hasta {{decimals}} decimales{{s}}.",
+      "amountWholeNumber": "Ingrese un monto en número entero.",
+      "amountPositive": "El monto del depósito debe ser mayor que cero.",
+      "amountMin": "El depósito mínimo de {{asset}} es {{amount}}.",
+      "amountMax": "El depósito máximo de {{asset}} es {{amount}}.",
+      "emailInvalid": "Ingrese una dirección de correo electrónico válida.",
+      "walletInvalid": "Ingrese una dirección de wallet de Stellar válida que comience con G.",
+      "assetInvalid": "Ingrese un código de activo válido (1-12 letras o dígitos en mayúsculas).",
+      "title": "No se pudo procesar el depósito",
+      "summary": "Corrija {{count}} error de validación{{s}} antes de continuar.",
+      "details": "Revise los campos resaltados a continuación para ver los problemas específicos.",
+      "inlineSummary": "Corrija {{count}} error{{s}} en el formulario antes de continuar."
+    }
+  },
+  "withdraw": {
+    "formAriaLabel": "Formulario de retiro",
+    "required": "Obligatorio",
+    "optional": "Opcional",
+    "submit": "Continuar a la verificación",
+    "errors": {
+      "inlineSummary": "Corrija {{count}} error{{s}} antes de continuar."
+    }
+  },
+  "kyc": {
+    "title": "Datos del cliente",
+    "subtitle": "Proporcione la información de identidad que el ancla requiere para abrir su cuenta.",
+    "firstName": "Nombre",
+    "lastName": "Apellido",
+    "emailAddress": "Correo electrónico",
+    "mobileNumber": "Número de móvil",
+    "identityDocument": "Documento de identidad",
+    "identityNumber": "Número de identidad",
+    "placeholders": {
+      "firstName": "Ada",
+      "lastName": "Lovelace",
+      "email": "nombre@ejemplo.com",
+      "mobile": "+14155552671",
+      "identityNumber": "A1234567"
+    },
+    "hints": {
+      "mobile": "Incluya el código de país, p. ej., +14155552671."
+    },
+    "idTypes": {
+      "nationalId": "Documento nacional de identidad",
+      "passport": "Pasaporte",
+      "driversLicense": "Licencia de conducir"
+    },
+    "errors": {
+      "firstNameMin": "El nombre debe tener al menos 2 caracteres.",
+      "firstNameMax": "El nombre no debe exceder los 64 caracteres.",
+      "lastNameMin": "El apellido debe tener al menos 2 caracteres.",
+      "lastNameMax": "El apellido no debe exceder los 64 caracteres.",
+      "emailRequired": "La dirección de correo electrónico es obligatoria.",
+      "emailMax": "La dirección de correo electrónico no debe exceder los 254 caracteres.",
+      "emailInvalid": "Ingrese una dirección de correo electrónico válida, p. ej., nombre@ejemplo.com.",
+      "mobileRequired": "El número de móvil es obligatorio.",
+      "mobileInvalid": "Ingrese el número en formato internacional, p. ej., +14155552671.",
+      "identityRequired": "El número de identidad es obligatorio.",
+      "identityAlphanumeric": "El número de identidad debe contener solo letras y dígitos.",
+      "passportInvalid": "Los números de pasaporte tienen 6–9 letras o dígitos.",
+      "identityLength": "El número de identidad debe tener entre 5 y 20 caracteres."
+    },
+    "success": "Datos del cliente enviados para verificación.",
+    "submit": "Enviar para verificación",
+    "submitting": "Enviando…"
+  },
+  "validation": {
+    "required": "{{label}} es obligatorio.",
+    "amountInvalid": "Ingrese un monto válido (p. ej., 120.50).",
+    "amountPositive": "El monto debe ser mayor que cero.",
+    "amountMax": "El monto supera el límite máximo por transacción.",
+    "bankAccount": "El número de cuenta bancaria debe tener entre 6 y 20 dígitos.",
+    "stellarInvalid": "Ingrese una dirección de wallet de Stellar válida que comience con G (56 caracteres).",
+    "addressShort": "La dirección debe tener al menos 5 caracteres.",
+    "addressLong": "La dirección no debe exceder los 200 caracteres.",
+    "addressLetters": "La dirección debe contener letras.",
+    "lengthMin": "Debe tener al menos {{min}} caracteres ({{len}} actuales).",
+    "lengthMax": "No debe exceder los {{max}} caracteres ({{len}} actuales).",
+    "emailInvalid": "Ingrese una dirección de correo electrónico válida.",
+    "emailMax": "El correo electrónico no debe exceder los 254 caracteres.",
+    "ibanFormat": "El IBAN debe comenzar con un código de país de 2 letras seguido de 2 dígitos de verificación.",
+    "ibanCountryLength": "El IBAN para {{country}} debe tener exactamente {{length}} caracteres (tiene {{len}}).",
+    "ibanRange": "El IBAN debe tener entre 8 y 34 caracteres.",
+    "ibanChecksum": "Los dígitos de verificación del IBAN no son válidos."
   }
 }

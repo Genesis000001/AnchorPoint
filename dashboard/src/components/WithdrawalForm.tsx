@@ -3,6 +3,7 @@ import type { FormEvent } from 'react';
 import { AlertCircle, CheckCircle2, Calculator } from 'lucide-react';
 import type { FieldRequirement } from '../types';
 import { validateField, validateAll } from '../lib/validation';
+import { useTranslation } from '../i18n/config';
 import { computePayoutBreakdown, fetchFeeEstimate } from '../lib/fees';
 import type { FeeEstimate } from '../lib/fees';
 
@@ -52,6 +53,7 @@ export const WithdrawalForm = ({
   onEstimateFee,
 }: WithdrawalFormProps) => {
   const formId = useId();
+  const { t } = useTranslation();
   const [values, setValues] = useState<FormValues>(() =>
     Object.fromEntries(fields.map((f) => [f.key, ''])),
   );
@@ -118,7 +120,7 @@ export const WithdrawalForm = ({
     setValues((prev) => ({ ...prev, [key]: value }));
     if (touched[key]) {
       const field = fields.find((f) => f.key === key)!;
-      const err = validateField(field, value);
+      const err = validateField(field, value, t);
       setErrors((prev) => ({ ...prev, [key]: err }));
     }
   };
@@ -126,7 +128,7 @@ export const WithdrawalForm = ({
   const handleBlur = (key: string) => {
     setTouched((prev) => ({ ...prev, [key]: true }));
     const field = fields.find((f) => f.key === key)!;
-    const err = validateField(field, values[key] ?? '');
+    const err = validateField(field, values[key] ?? '', t);
     setErrors((prev) => ({ ...prev, [key]: err }));
   };
 
@@ -136,7 +138,7 @@ export const WithdrawalForm = ({
     const allTouched = Object.fromEntries(fields.map((f) => [f.key, true]));
     setTouched(allTouched);
 
-    const allErrors = validateAll(fields, values);
+    const allErrors = validateAll(fields, values, t);
     setErrors(allErrors);
 
     if (Object.keys(allErrors).length === 0) {
@@ -159,7 +161,7 @@ export const WithdrawalForm = ({
     <form
       onSubmit={handleSubmit}
       noValidate
-      aria-label="Withdrawal form"
+      aria-label={t('withdraw.formAriaLabel')}
       className="space-y-5"
     >
       {/* Summary error alert shown after first submit attempt */}
@@ -171,7 +173,10 @@ export const WithdrawalForm = ({
         >
           <AlertCircle size={16} className="mt-0.5 shrink-0 text-rose-400" aria-hidden="true" />
           <p className="text-sm text-rose-300">
-            Please fix {errorCount} error{errorCount !== 1 ? 's' : ''} before continuing.
+            {t('withdraw.errors.inlineSummary', {
+              count: errorCount,
+              s: errorCount !== 1 ? 's' : '',
+            })}
           </p>
         </div>
       )}
@@ -192,11 +197,11 @@ export const WithdrawalForm = ({
               {field.label}
               {field.required ? (
                 <span className="text-xs font-normal text-amber-400" aria-hidden="true">
-                  Required
+                  {t('withdraw.required')}
                 </span>
               ) : (
                 <span className="text-xs font-normal text-slate-400" aria-hidden="true">
-                  Optional
+                  {t('withdraw.optional')}
                 </span>
               )}
             </label>
@@ -325,7 +330,7 @@ export const WithdrawalForm = ({
         disabled={disableSubmit}
         className="btn-primary w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-text disabled:cursor-not-allowed disabled:opacity-50"
       >
-        Continue to Verification
+        {t('withdraw.submit')}
       </button>
     </form>
   );
