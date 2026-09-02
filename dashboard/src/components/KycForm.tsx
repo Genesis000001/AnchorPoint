@@ -3,6 +3,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
 import { PATTERNS } from '../lib/validation';
+import { useTranslation } from '../i18n/config';
 
 /** E.164: leading +, country code 1-9, 7–14 further digits. */
 const PHONE_PATTERN = /^\+[1-9]\d{7,14}$/;
@@ -12,67 +13,70 @@ const ID_NUMBER_PATTERN = /^[A-Za-z0-9]+$/;
 const PASSPORT_PATTERN = /^[A-Za-z0-9]{6,9}$/;
 
 export const ID_TYPES = [
-  { value: 'national_id', label: 'National ID' },
-  { value: 'passport', label: 'Passport' },
-  { value: 'drivers_license', label: "Driver's License" },
+  { value: 'national_id', labelKey: 'kyc.idTypes.nationalId' },
+  { value: 'passport', labelKey: 'kyc.idTypes.passport' },
+  { value: 'drivers_license', labelKey: 'kyc.idTypes.driversLicense' },
 ] as const;
 
-const kycSchema = z
-  .object({
-    firstName: z
-      .string()
-      .trim()
-      .min(2, 'First name must be at least 2 characters.')
-      .max(64, 'First name must not exceed 64 characters.'),
-    lastName: z
-      .string()
-      .trim()
-      .min(2, 'Last name must be at least 2 characters.')
-      .max(64, 'Last name must not exceed 64 characters.'),
-    emailAddress: z
-      .string()
-      .trim()
-      .min(1, 'Email address is required.')
-      .max(254, 'Email address must not exceed 254 characters.')
-      .regex(PATTERNS.EMAIL, 'Enter a valid email address, e.g. name@example.com.'),
-    mobileNumber: z
-      .string()
-      .trim()
-      .min(1, 'Mobile number is required.')
-      .regex(
-        PHONE_PATTERN,
-        'Enter the number in international format, e.g. +14155552671.',
-      ),
-    idType: z.enum(['national_id', 'passport', 'drivers_license']),
-    idNumber: z
-      .string()
-      .trim()
-      .min(1, 'Identity number is required.')
-      .regex(ID_NUMBER_PATTERN, 'Identity number must contain only letters and digits.'),
-  })
-  // Length rules differ per document, so they run once the type is known.
-  .superRefine((values, ctx) => {
-    const { idType, idNumber } = values;
+type TranslateFn = (key: string, params?: Record<string, string | number>) => string;
 
-    if (idType === 'passport' && idNumber && !PASSPORT_PATTERN.test(idNumber)) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['idNumber'],
-        message: 'Passport numbers are 6–9 letters or digits.',
-      });
-      return;
-    }
+const buildKycSchema = (t: TranslateFn) =>
+  z
+    .object({
+      firstName: z
+        .string()
+        .trim()
+        .min(2, t('kyc.errors.firstNameMin'))
+        .max(64, t('kyc.errors.firstNameMax')),
+      lastName: z
+        .string()
+        .trim()
+        .min(2, t('kyc.errors.lastNameMin'))
+        .max(64, t('kyc.errors.lastNameMax')),
+      emailAddress: z
+        .string()
+        .trim()
+        .min(1, t('kyc.errors.emailRequired'))
+        .max(254, t('kyc.errors.emailMax'))
+        .regex(PATTERNS.EMAIL, t('kyc.errors.emailInvalid')),
+      mobileNumber: z
+        .string()
+        .trim()
+        .min(1, t('kyc.errors.mobileRequired'))
+        .regex(
+          PHONE_PATTERN,
+          t('kyc.errors.mobileInvalid'),
+        ),
+      idType: z.enum(['national_id', 'passport', 'drivers_license']),
+      idNumber: z
+        .string()
+        .trim()
+        .min(1, t('kyc.errors.identityRequired'))
+        .regex(ID_NUMBER_PATTERN, t('kyc.errors.identityAlphanumeric')),
+    })
+    // Length rules differ per document, so they run once the type is known.
+    .superRefine((values, ctx) => {
+      const { idType, idNumber } = values;
 
-    if (idType !== 'passport' && idNumber && (idNumber.length < 5 || idNumber.length > 20)) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['idNumber'],
-        message: 'Identity number must be between 5 and 20 characters.',
-      });
-    }
-  });
+      if (idType === 'passport' && idNumber && !PASSPORT_PATTERN.test(idNumber)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['idNumber'],
+          message: t('kyc.errors.passportInvalid'),
+        });
+        return;
+      }
 
-export type KycFormValues = z.infer<typeof kycSchema>;
+      if (idType !== 'passport' && idNumber && (idNumber.length < 5 || idNumber.length > 20)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['idNumber'],
+          message: t('kyc.errors.identityLength'),
+        });
+      }
+    });
+
+export type KycFormValues = z.infer<ReturnType<typeof buildKycSchema>>;
 
 interface KycFormProps {
   /** Receives the parsed, valid payload for the SEP-12 PUT /customer call. */
@@ -97,6 +101,9 @@ const FieldError = ({ id, message }: { id: string; message?: string }) =>
  * users see problems as they leave each field rather than only on submit.
  */
 export const KycForm = ({ onSubmit, defaultValues }: KycFormProps) => {
+  const { t } = useTranslation();
+  const kycSchema = buildKycSchema(t);
+
   const {
     register,
     handleSubmit,
@@ -132,22 +139,20 @@ export const KycForm = ({ onSubmit, defaultValues }: KycFormProps) => {
   return (
     <form onSubmit={submitHandler} noValidate className="glass-card space-y-5 p-6">
       <div>
-        <h3 className="font-display text-xl font-bold text-slate-100">Customer Details</h3>
-        <p className="mt-1 text-sm text-slate-400">
-          Provide the identity information required by the anchor to open your account.
-        </p>
+        <h3 className="font-display text-xl font-bold text-slate-100">{t('kyc.title')}</h3>
+        <p className="mt-1 text-sm text-slate-400">{t('kyc.subtitle')}</p>
       </div>
 
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
         <div>
           <label htmlFor="kyc-first-name" className="mb-1.5 block text-sm font-medium text-slate-300">
-            First Name
+            {t('kyc.firstName')}
           </label>
           <input
             id="kyc-first-name"
             type="text"
             autoComplete="given-name"
-            placeholder="Ada"
+            placeholder={t('kyc.placeholders.firstName')}
             className={inputClass('firstName')}
             {...fieldA11y('firstName')}
             {...register('firstName')}
@@ -157,13 +162,13 @@ export const KycForm = ({ onSubmit, defaultValues }: KycFormProps) => {
 
         <div>
           <label htmlFor="kyc-last-name" className="mb-1.5 block text-sm font-medium text-slate-300">
-            Last Name
+            {t('kyc.lastName')}
           </label>
           <input
             id="kyc-last-name"
             type="text"
             autoComplete="family-name"
-            placeholder="Lovelace"
+            placeholder={t('kyc.placeholders.lastName')}
             className={inputClass('lastName')}
             {...fieldA11y('lastName')}
             {...register('lastName')}
@@ -174,13 +179,13 @@ export const KycForm = ({ onSubmit, defaultValues }: KycFormProps) => {
 
       <div>
         <label htmlFor="kyc-email" className="mb-1.5 block text-sm font-medium text-slate-300">
-          Email Address
+          {t('kyc.emailAddress')}
         </label>
         <input
           id="kyc-email"
           type="email"
           autoComplete="email"
-          placeholder="name@example.com"
+          placeholder={t('kyc.placeholders.email')}
           className={inputClass('emailAddress')}
           {...fieldA11y('emailAddress')}
           {...register('emailAddress')}
@@ -190,29 +195,27 @@ export const KycForm = ({ onSubmit, defaultValues }: KycFormProps) => {
 
       <div>
         <label htmlFor="kyc-mobile" className="mb-1.5 block text-sm font-medium text-slate-300">
-          Mobile Number
+          {t('kyc.mobileNumber')}
         </label>
         <input
           id="kyc-mobile"
           type="tel"
           autoComplete="tel"
-          placeholder="+14155552671"
+          placeholder={t('kyc.placeholders.mobile')}
           className={inputClass('mobileNumber')}
           {...fieldA11y('mobileNumber')}
           {...register('mobileNumber')}
         />
         <FieldError id="mobileNumber-error" message={errors.mobileNumber?.message} />
         {!errors.mobileNumber && (
-          <p className="mt-1.5 text-xs text-slate-500">
-            Include the country code, e.g. +14155552671.
-          </p>
+          <p className="mt-1.5 text-xs text-slate-500">{t('kyc.hints.mobile')}</p>
         )}
       </div>
 
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-[minmax(0,12rem)_1fr]">
         <div>
           <label htmlFor="kyc-id-type" className="mb-1.5 block text-sm font-medium text-slate-300">
-            Identity Document
+            {t('kyc.identityDocument')}
           </label>
           <select
             id="kyc-id-type"
@@ -222,7 +225,7 @@ export const KycForm = ({ onSubmit, defaultValues }: KycFormProps) => {
           >
             {ID_TYPES.map((type) => (
               <option key={type.value} value={type.value}>
-                {type.label}
+                {t(type.labelKey)}
               </option>
             ))}
           </select>
@@ -231,13 +234,13 @@ export const KycForm = ({ onSubmit, defaultValues }: KycFormProps) => {
 
         <div>
           <label htmlFor="kyc-id-number" className="mb-1.5 block text-sm font-medium text-slate-300">
-            Identity Number
+            {t('kyc.identityNumber')}
           </label>
           <input
             id="kyc-id-number"
             type="text"
             autoComplete="off"
-            placeholder="A1234567"
+            placeholder={t('kyc.placeholders.identityNumber')}
             className={`${inputClass('idNumber')} font-mono tracking-wide`}
             {...fieldA11y('idNumber')}
             {...register('idNumber')}
@@ -252,7 +255,7 @@ export const KycForm = ({ onSubmit, defaultValues }: KycFormProps) => {
           className="flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300"
         >
           <CheckCircle2 size={16} aria-hidden="true" />
-          Customer details submitted for verification.
+          {t('kyc.success')}
         </p>
       )}
 
@@ -262,7 +265,7 @@ export const KycForm = ({ onSubmit, defaultValues }: KycFormProps) => {
         className="action-button btn-primary flex w-full items-center justify-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-text sm:w-auto"
       >
         {isSubmitting && <Loader2 size={16} className="animate-spin" aria-hidden="true" />}
-        {isSubmitting ? 'Submitting…' : 'Submit for Verification'}
+        {isSubmitting ? t('kyc.submitting') : t('kyc.submit')}
       </button>
     </form>
   );

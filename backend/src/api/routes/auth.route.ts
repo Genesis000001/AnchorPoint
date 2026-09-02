@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { RedisService } from '../../services/redis.service';
 import { getChallenge, getToken, refreshToken } from '../controllers/auth.controller';
+import { sep10ChallengeLimiter } from '../middleware/rate-limit.middleware';
 
 const router = Router();
 
@@ -14,6 +15,24 @@ const mockRedisClient = {
 };
 
 const redisService = new RedisService(mockRedisClient);
+
+// Explicitly handle CORS pre-flight for SEP-10 endpoints to ensure
+// external web wallets can perform OPTIONS pre-flight checks.
+router.options('/', (req: Request, res: Response) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  return res.sendStatus(204);
+});
+
+router.options('/token', (req: Request, res: Response) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  return res.sendStatus(204);
+});
 
 /**
  * @swagger
@@ -99,7 +118,7 @@ const redisService = new RedisService(mockRedisClient);
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', sep10ChallengeLimiter, async (req: Request, res: Response) => {
   return getChallenge(req, res, redisService);
 });
 
@@ -123,7 +142,7 @@ router.post('/', async (req: Request, res: Response) => {
  *       400:
  *         description: Invalid request parameters
  */
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', sep10ChallengeLimiter, async (req: Request, res: Response) => {
   return getChallenge(req, res, redisService);
 });
 

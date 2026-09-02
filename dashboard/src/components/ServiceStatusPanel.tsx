@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
+import { LineChart, Line, ResponsiveContainer, Tooltip, YAxis } from 'recharts';
 
 type ServiceState = 'healthy' | 'degraded' | 'offline';
 
@@ -16,8 +17,18 @@ interface HealthResponse {
   redis?: { status: string; latencyMs?: number };
   database?: { status: string; latencyMs?: number };
   horizon?: { status: string; latencyMs?: number };
+  relayer?: { status: string; latencyMs?: number };
   soroban?: { status: string; latencyMs?: number };
   [key: string]: unknown;
+}
+
+interface LatencyDataPoint {
+  timestamp: number;
+  redis: number;
+  database: number;
+  horizon: number;
+  relayer: number;
+  avg: number;
 }
 
 const LATENCY_DEGRADED_MS = 500;
@@ -63,6 +74,7 @@ const ServiceStatusPanel: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  const [latencyHistory, setLatencyHistory] = useState<LatencyDataPoint[]>([]);
 
   const fetchHealth = useCallback(async () => {
     setLoading(true);
@@ -97,9 +109,31 @@ const ServiceStatusPanel: React.FC = () => {
       if (data.horizon) {
         list.push({ name: 'Horizon', state: deriveState(data.horizon), latencyMs: data.horizon.latencyMs, lastChecked: now });
       }
+      if (data.relayer) {
+        list.push({ name: 'Relayer', state: deriveState(data.relayer), latencyMs: data.relayer.latencyMs, lastChecked: now });
+      }
       if (data.soroban) {
         list.push({ name: 'Soroban RPC', state: deriveState(data.soroban), latencyMs: data.soroban.latencyMs, lastChecked: now });
       }
+
+      // Collect current latencies for history
+      const redisLatency = data.redis?.latencyMs ?? elapsed;
+      const dbLatency = data.database?.latencyMs ?? elapsed;
+      const horizonLatency = data.horizon?.latencyMs ?? 0;
+      const relayerLatency = data.relayer?.latencyMs ?? 0;
+      const avgLatency = (redisLatency + dbLatency + horizonLatency + relayerLatency) / (data.horizon && data.relayer ? 4 : data.horizon || data.relayer ? 3 : 2);
+      
+      const newDataPoint: LatencyDataPoint = {
+        timestamp: now.getTime(),
+        redis: redisLatency,
+        database: dbLatency,
+        horizon: horizonLatency,
+        relayer: relayerLatency,
+        avg: avgLatency
+      };
+      
+      // Keep only last 20 data points (10 minutes with 30s interval)
+      setLatencyHistory(prev => [...prev.slice(-19), newDataPoint]);
 
       setServices(list);
       setLastRefresh(now);
@@ -117,6 +151,9 @@ const ServiceStatusPanel: React.FC = () => {
 
   useEffect(() => {
     void fetchHealth();
+    // Fetch every 30 seconds
+    const interval = setInterval(fetchHealth, 30000);
+    return () => clearInterval(interval);
   }, [fetchHealth]);
 
   return (
@@ -160,6 +197,24 @@ const ServiceStatusPanel: React.FC = () => {
           </li>
         ))}
       </ul>
+
+      {latencyHistory.length > 1 && (
+        <div className="mt-6">
+          <h4 className="mb-3 text-sm font-medium text-slate-400">Average API Latency (30s)</h4>
+          <div className="h-24 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={latencyHistory}>
+                <YAxis stroke="#94a3b8" tick={{ fontSize: 10 }} width={30} />
+                <Tooltip 
+                  contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '8px' }}
+                  labelStyle={{ color: '#94a3b8' }}
+                />
+                <Line type="monotone" dataKey="avg" stroke="#6366f1" strokeWidth={2} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
 
       {lastRefresh && (
         <p className="mt-3 text-right text-xs text-slate-600" aria-live="polite">

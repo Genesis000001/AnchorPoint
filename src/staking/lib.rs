@@ -475,4 +475,95 @@ mod tests {
         client.stake(&user, &1000, &0);
         client.claim_rewards(&user);
     }
+
+    #[test]
+    fn test_pending_rewards_zero_without_stake() {
+        let (env, client, _admin, _token_id) = setup();
+        let user = Address::generate(&env);
+        assert_eq!(client.pending_rewards(&user), 0);
+    }
+
+    #[test]
+    fn test_pending_rewards_after_time() {
+        let (env, client, _admin, token_id) = setup();
+        let user = Address::generate(&env);
+        let stellar_asset_client = StellarAssetClient::new(&env, &token_id);
+        stellar_asset_client.mint(&user, &10000);
+
+        client.stake(&user, &1000, &0);
+        env.ledger().set_timestamp(env.ledger().timestamp() + 1000);
+
+        // rewards = (1000 * 1000 * 1000) / 10_000_000 = 100
+        assert_eq!(client.pending_rewards(&user), 100);
+    }
+
+    #[test]
+    fn test_stake_accumulates_rewards() {
+        let (env, client, _admin, token_id) = setup();
+        let user = Address::generate(&env);
+        let stellar_asset_client = StellarAssetClient::new(&env, &token_id);
+        stellar_asset_client.mint(&user, &20000);
+
+        client.stake(&user, &1000, &0);
+        env.ledger().set_timestamp(env.ledger().timestamp() + 10000);
+        client.stake(&user, &500, &0);
+
+        // Rewards accrued by the first stake over 10000s must be banked into
+        // accumulated_rewards: (1000 * 1000 * 10000) / 10_000_000 = 1000
+        let info = client.get_stake_info(&user);
+        assert_eq!(info.accumulated_rewards, 1000);
+    }
+
+    #[test]
+    fn test_stake_same_lock_different_tier_keeps_multiplier() {
+        let (env, client, _admin, token_id) = setup();
+        let user = Address::generate(&env);
+        let stellar_asset_client = StellarAssetClient::new(&env, &token_id);
+        stellar_asset_client.mint(&user, &20000);
+
+        // Two tiers with identical lock duration but different multipliers
+        let tiers = vec![
+            &env,
+            LockTier {
+                lock_seconds: 3600,
+                rate_multiplier: 100,
+            },
+            LockTier {
+                lock_seconds: 3600,
+                rate_multiplier: 125,
+            },
+        ];
+        client.set_tiers(&tiers);
+
+        client.stake(&user, &1000, &0);
+        // Staking again at the same timestamp lands exactly on the current
+        // lock_end. Since the lock is not extended, the rate multiplier must
+        // stay at tier 0's value (100).
+        client.stake(&user, &1000, &1);
+
+        let info = client.get_stake_info(&user);
+        assert_eq!(info.lock_end, env.ledger().timestamp() + 3600);
+        assert_eq!(info.rate_multiplier, 100);
+    }
+
+    #[test]
+    fn test_withdraw_at_exact_lock_end_no_penalty() {
+        let (env, client, _admin, token_id) = setup();
+        let user = Address::generate(&env);
+        let token_client = token::Client::new(&env, &token_id);
+        let stellar_asset_client = StellarAssetClient::new(&env, &token_id);
+        stellar_asset_client.mint(&user, &10000);
+
+        client.stake(&user, &1000, &0);
+        let lock_end = env.ledger().timestamp() + 3600;
+
+        // Advance exactly to lock_end (not beyond): no penalty applies
+        env.ledger().set_timestamp(lock_end);
+        stellar_asset_client.mint(&client.address, &400);
+
+        client.withdraw(&user);
+
+        // Full principal + rewards (1000 * 1000 * 3600 / 10_000_000 = 360)
+        assert_eq!(token_client.balance(&user), 9000 + 1000 + 360);
+    }
 }

@@ -11,6 +11,13 @@ route:
   group_interval: 5m
   repeat_interval: 2h
   routes:
+    # TLS certificate renewal alerts are routed to the platform Slack channel in
+    # addition to PagerDuty so the on-call has a low-friction early signal when a
+    # Let's Encrypt certificate is at risk of not auto-renewing.
+    - matchers:
+        - service="cert-manager"
+      receiver: slack-cert-renewal
+      continue: true
     - matchers:
         - severity="warning"
       receiver: pagerduty-warning
@@ -68,6 +75,23 @@ receivers:
             *Description:* {{ .Annotations.description }}
           {{ end }}
         send_resolved: true
+
+  # Dedicated channel for automated TLS certificate renewal notifications.
+  # Set SLACK_WEBHOOK_URL in the Alertmanager environment (with --config.expand-env=true).
+  - name: slack-cert-renewal
+    slack_configs:
+      - api_url: ${SLACK_WEBHOOK_URL}
+        channel: '#platform-cert-alerts'
+        send_resolved: true
+        title: '{{ if eq .Status "resolved" }}✅ Resolved{{ else }}{{ if eq .CommonLabels.severity "critical" }}🚨 Critical{{ else }}⚠️ Warning{{ end }}{{ end }}: {{ .CommonAnnotations.summary }}'
+        text: |-
+          Alert: {{ .CommonLabels.alertname }}
+          Service: {{ .CommonLabels.service }}
+          Severity: {{ .CommonLabels.severity }}
+
+          {{ .CommonAnnotations.description }}
+
+          Runbook: {{ .CommonAnnotations.runbook_url }}
 
 inhibit_rules:
   - source_matchers:

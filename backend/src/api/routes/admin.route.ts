@@ -18,24 +18,13 @@ import {
   InvalidResetTokenError,
 } from '../../services/admin-password-reset.service';
 import { purgeTomlCache } from '../../services/indexer/toml.fetcher';
+import adminAuditService, {
+  AdminAuditAction,
+  getAuditActor,
+} from '../../services/admin-audit.service';
 
 const router = Router();
 const adminPasswordResetService = new AdminPasswordResetService();
-
-const passwordResetRequestSchema = z.object({
-  email: z.string().email(),
-});
-
-const passwordResetConfirmSchema = z.object({
-  token: z.string().min(32),
-  newPassword: z
-    .string()
-    .min(12, 'Password must be at least 12 characters')
-    .max(128, 'Password must be at most 128 characters')
-    .regex(/[a-z]/, 'Password must include a lowercase letter')
-    .regex(/[A-Z]/, 'Password must include an uppercase letter')
-    .regex(/[0-9]/, 'Password must include a number'),
-});
 
 // Singleton service instance
 const sep31Service = new SEP31Service(createCallbackNotifier());
@@ -86,16 +75,20 @@ router.get('/network', (req: Request, res: Response) => {
  *       400:
  *         description: Invalid network type
  */
-router.post('/network', validate({ body: switchNetworkSchema }), (req: Request, res: Response) => {
+router.post('/network', validate({ body: switchNetworkSchema }), async (req: Request, res: Response) => {
   const { network } = req.body;
 
-  if (!Object.values(NetworkType).includes(network)) {
-    return res.status(400).json({ error: 'Invalid network type' });
-  }
-
   try {
+    const previousNetwork = stellarService.getNetwork();
     stellarService.setNetwork(network as NetworkType);
     logger.info(`Switched to Stellar network: ${network}`);
+    await adminAuditService.recordConfigChange({
+      action: 'ADMIN_NETWORK_SWITCH',
+      actor: getAuditActor(req),
+      targetEntity: 'stellar_network',
+      before: { network: previousNetwork },
+      after: { network },
+    });
     res.json({ message: `Switched to ${network} successfully`, network });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -147,6 +140,13 @@ router.patch('/transactions/:id', validate({ body: patchTransactionSchema }), as
       feeAmount: amount_fee,
     });
 
+    await adminAuditService.recordConfigChange({
+      action: 'ADMIN_TRANSACTION_STATUS_UPDATE',
+      actor: getAuditActor(req),
+      targetEntity: `transaction:${id}`,
+      after: { status, stellar_transaction_id, external_transaction_id, amount_out, amount_fee },
+    });
+
     res.json({ message: 'Transaction status updated successfully', transaction: updatedTransaction });
   } catch (error: any) {
     logger.error('Error updating transaction status', { error: error.message });
@@ -178,21 +178,12 @@ router.patch('/transactions/:id', validate({ body: patchTransactionSchema }), as
  *       400:
  *         description: Invalid payload
  */
-router.post('/password-reset/request', validate({ body: passwordResetRequestSchema }),
-  const parsed = passwordResetRequestSchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({
-      status: 'error',
-      message: parsed.error.issues[0]?.message ?? 'Invalid request body',
-    });
-  }
-
+router.post('/password-reset/request', validate({ body: passwordResetRequestSchema }), async (req: Request, res: Response) => {
   try {
-    await adminPasswordResetService.requestPasswordReset(parsed.data.email);
+    await adminPasswordResetService.requestPasswordReset(req.body.email);
     return res.json({
       status: 'success',
-      message:
-        'If an account exists for that email, a password reset link has been sent.',
+      message: 'If an account exists for that email, a password reset link has been sent.',
     });
   } catch (error: any) {
     logger.error('Failed to request password reset', {
@@ -232,20 +223,18 @@ router.post('/password-reset/request', validate({ body: passwordResetRequestSche
  *       400:
  *         description: Invalid token or payload
  */
-router.post('/password-reset/confirm', validate({ body: passwordResetConfirmSchema }),
-  const parsed = passwordResetConfirmSchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({
-      status: 'error',
-      message: parsed.error.issues[0]?.message ?? 'Invalid request body',
-    });
-  }
-
+router.post('/password-reset/confirm', validate({ body: passwordResetConfirmSchema }), async (req: Request, res: Response) => {
   try {
     await adminPasswordResetService.confirmPasswordReset(
-      parsed.data.token,
-      parsed.data.newPassword
+      req.body.token,
+      req.body.newPassword
     );
+
+    await adminAuditService.recordConfigChange({
+      action: 'ADMIN_PASSWORD_RESET_CONFIRM',
+      actor: getAuditActor(req),
+      targetEntity: 'admin_password',
+    });
 
     return res.json({
       status: 'success',
@@ -390,10 +379,107 @@ router.post('/cache/purge-toml', validate({ body: purgeCacheSchema }), async (re
 
   try {
     const purged = await purgeTomlCache(parsed.data.homeDomain);
+    await adminAuditService.recordConfigChange({
+      action: 'ADMIN_TOML_CACHE_PURGE',
+      actor: getAuditActor(req),
+      targetEntity: parsed.data.homeDomain ?? 'all',
+      after: { purged },
+    });
     res.json({ purged });
   } catch (error: any) {
     logger.error('Failed to purge TOML cache', { message: error?.message });
     res.status(500).json({ error: error.message });
+  }
+});
+
+const auditLogsQuerySchema = z.object({
+  action: z.string().optional(),
+  actorId: z.string().optional(),
+  startDate: z.string().optional(),
+  endDate: z.string().optional(),
+  limit: z.string().optional().transform(v => (v ? parseInt(v, 10) : undefined)),
+  offset: z.string().optional().transform(v => (v ? parseInt(v, 10) : undefined)),
+});
+
+/**
+ * @swagger
+ * /admin/audit-logs:
+ *   get:
+ *     summary: List administrative audit log entries
+ *     tags: [Admin]
+ *     parameters:
+ *       - in: query
+ *         name: action
+ *         schema:
+ *           type: string
+ *         description: Filter by audit action
+ *       - in: query
+ *         name: actorId
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: startDate
+ *         schema:
+ *           type: string
+ *           format: date-time
+ *       - in: query
+ *         name: endDate
+ *         schema:
+ *           type: string
+ *           format: date-time
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *       - in: query
+ *         name: offset
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Paginated list of audit log entries
+ *       400:
+ *         description: Invalid query parameters
+ */
+router.get('/audit-logs', async (req: Request, res: Response) => {
+  const parsed = auditLogsQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    return res.status(400).json({
+      status: 'error',
+      message: parsed.error.issues[0]?.message ?? 'Invalid query parameters',
+    });
+  }
+
+  const { action, actorId, startDate, endDate, limit, offset } = parsed.data;
+  const parsedStartDate = startDate ? new Date(startDate) : undefined;
+  const parsedEndDate = endDate ? new Date(endDate) : undefined;
+
+  if ((startDate && isNaN(parsedStartDate!.getTime())) || (endDate && isNaN(parsedEndDate!.getTime()))) {
+    return res.status(400).json({ status: 'error', message: 'Invalid date format' });
+  }
+
+  try {
+    const result = await adminAuditService.listAuditLogs({
+      action: action as AdminAuditAction | undefined,
+      actorId,
+      startDate: parsedStartDate,
+      endDate: parsedEndDate,
+      limit,
+      offset,
+    });
+
+    res.json({
+      status: 'success',
+      data: result.entries,
+      pagination: {
+        total: result.total,
+        limit: result.limit,
+        offset: result.offset,
+      },
+    });
+  } catch (error: any) {
+    logger.error('Failed to fetch admin audit logs', { message: error?.message });
+    res.status(500).json({ status: 'error', message: 'Failed to fetch audit logs' });
   }
 });
 

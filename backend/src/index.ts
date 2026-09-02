@@ -38,7 +38,7 @@ import { notificationService } from './services/notification.service';
 import { createEmailProvider, ConsoleSmsProvider, FcmPushProvider } from './lib/notifications/providers';
 import { NotificationType } from './services/notification.service';
 import { validateKmsConfigOnStartup, verifyDecryptionCapabilityOnStartup } from './lib/key-management.service';
-import queueDashboardRouter from './api/routes/queue-dashboard.route';
+import queueDashboardRouter, { dashboardQueues } from './api/routes/queue-dashboard.route';
 import prisma from './lib/prisma';
 import { redis } from './lib/redis';
 import { validateStorageConfigOnStartup } from './services/storage-provider.service';
@@ -46,55 +46,77 @@ import { uploadExpiryScheduler } from './workers/upload-expiry.scheduler';
 import { dbMetricsScheduler } from './workers/db-metrics.scheduler';
 import { initSocket } from './lib/socket';
 import { kycExpiryScheduler } from './workers/kyc-expiry.scheduler';
+import { cleanupWorker } from './workers/cleanup.worker';
+import { feeReportWorker } from './workers/fee-report.worker';
+import contractQueueService from './services/contract-queue.service';
 import { checkMigrationsOnStartup } from './services/migration-check.service';
 
 let server: ReturnType<typeof app.listen> | null = null;
+let isShuttingDown = false;
 
-function gracefulShutdown(signal: string): void {
+async function gracefulShutdown(signal: string): Promise<void> {
+  if (isShuttingDown) {
+    return;
+  }
+  isShuttingDown = true;
+
   logger.info(`${signal} received, initiating graceful shutdown`);
 
-  if (feeReportScheduler) {
-    feeReportScheduler.stop();
-  }
-
-  if (uploadExpiryScheduler) {
-    uploadExpiryScheduler.stop();
-  }
-
-  if (dbMetricsScheduler) {
-    dbMetricsScheduler.stop();
-  }
-
-  if (server) {
-    server.close(() => {
-      logger.info('HTTP server closed');
-    });
-  }
-
-  prisma.$disconnect()
-    .then(() => {
-      logger.info('Prisma client disconnected');
-    })
-    .catch((err) => {
-      logger.error('Error disconnecting Prisma client:', err);
-    });
-
-  redis.quit()
-    .then(() => {
-      logger.info('Redis connection closed');
-    })
-    .catch((err) => {
-      logger.error('Error closing Redis connection:', err);
-    });
-
-  setTimeout(() => {
+  const forceExitTimer = setTimeout(() => {
     logger.error('Graceful shutdown timed out, forcing exit');
     process.exit(1);
   }, 30000);
+  forceExitTimer.unref();
+
+  // Stop scheduling new work before tearing down the connections it depends on.
+  feeReportScheduler.stop();
+  uploadExpiryScheduler.stop();
+  kycExpiryScheduler.stop();
+  cleanupWorker.stop();
+  dbMetricsScheduler.stop();
+
+  // Stop accepting new HTTP traffic; let in-flight requests finish.
+  if (server) {
+    await new Promise<void>((resolve) => {
+      server!.close((err) => {
+        if (err) {
+          logger.error('Error closing HTTP server:', err);
+        } else {
+          logger.info('HTTP server closed');
+        }
+        resolve();
+      });
+    });
+  }
+
+  // Drain BullMQ queue connections, then close the database and Redis.
+  const steps: Array<[string, () => Promise<unknown>]> = [
+    ['fee report queue', () => feeReportScheduler.closeQueue()],
+    ['fee report worker', () => feeReportWorker.close()],
+    ['contract queue service', () => contractQueueService.close()],
+    ...dashboardQueues.map(
+      (queue): [string, () => Promise<unknown>] => [`${queue.name} queue`, () => queue.close()]
+    ),
+    ['Prisma client', () => prisma.$disconnect()],
+    ['Redis connection', () => redis.quit()],
+  ];
+
+  for (const [label, action] of steps) {
+    try {
+      await action();
+      logger.info(`${label} closed`);
+    } catch (err) {
+      logger.error(`Error closing ${label}:`, err);
+    }
+  }
+
+  clearTimeout(forceExitTimer);
+  logger.info(`Graceful shutdown complete (${signal})`);
+  process.exit(0);
 }
 
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => { void gracefulShutdown('SIGINT'); });
+process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });
 
 // Initialize Notification Engine
 notificationService.registerProvider(NotificationType.EMAIL, createEmailProvider());
@@ -108,14 +130,14 @@ app.use(securityHeadersMiddleware);
 app.use(tracingMiddleware);
 const PORT = config.PORT;
 
-const configuredOrigins = process.env.PRODUCTION_CORS_ORIGINS ?? '';
+const configuredOrigins = process.env.ALLOWED_ORIGINS || process.env.PRODUCTION_CORS_ORIGINS || '';
 const allowedOrigins = configuredOrigins
   .split(',')
   .map((origin) => origin.trim())
   .filter((origin) => origin.length > 0);
 
 if (process.env.NODE_ENV === 'production' && allowedOrigins.length === 0) {
-  throw new Error('PRODUCTION_CORS_ORIGINS must be configured in production.');
+  throw new Error('ALLOWED_ORIGINS (or PRODUCTION_CORS_ORIGINS) must be configured in production.');
 }
 
 const fallbackLocalOrigins = ['http://localhost:3000', 'http://127.0.0.1:3000'];
@@ -364,8 +386,10 @@ app.use(errorHandler);
 /* istanbul ignore next */
 if (process.env.NODE_ENV !== 'test') {
   (async () => {
+    // Check migrations first
     await checkMigrationsOnStartup();
 
+    // Validate and hydrate config
     validateKmsConfigOnStartup(config);
     await hydrateEncryptedConfigSecrets();
     const decryptionOk = await verifyDecryptionCapabilityOnStartup({
@@ -400,6 +424,7 @@ if (process.env.NODE_ENV !== 'test') {
           uploadExpiryScheduler.start();
           kycExpiryScheduler.start();
           dbMetricsScheduler.start();
+          cleanupWorker.start();
         });
       });
   })().catch((error) => {
