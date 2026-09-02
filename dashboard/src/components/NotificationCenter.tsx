@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { Bell, Check, Clock, AlertCircle, Filter, RefreshCw, Settings } from 'lucide-react';
-import { motion } from 'framer-motion';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { AlertCircle, AlertTriangle, Bell, Check, Clock, Filter, Info, RefreshCw, Settings, X } from 'lucide-react';
+import { AnimatePresence, motion } from 'framer-motion';
 
 export interface Notification {
   id: string;
@@ -17,6 +17,227 @@ interface NotificationCenterProps {
   onOpenPreferences?: () => void;
 }
 
+const INITIAL_BACKOFF_MS = 1000;
+const MAX_BACKOFF_MS = 30000;
+
+export const STREAM_PATH = '/api/notifications/stream';
+
+function isNotification(value: unknown): value is Notification {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const candidate = value as Partial<Notification>;
+  return typeof candidate.id === 'string' && typeof candidate.message === 'string';
+}
+
+// ---------------------------------------------------------------------------
+// Toast stack
+// ---------------------------------------------------------------------------
+
+export type ToastSeverity = 'success' | 'warning' | 'error' | 'info';
+
+export interface Toast {
+  id: string;
+  message: string;
+  severity: ToastSeverity;
+}
+
+/** A queued toast plus the bookkeeping needed to pause and resume its timer. */
+interface QueuedToast extends Toast {
+  /** Milliseconds still to run. Frozen while the stack is paused. */
+  remainingMs: number;
+  /** Wall-clock deadline, or null while paused. */
+  expiresAt: number | null;
+}
+
+export const TOAST_DURATION_MS = 5000;
+/** Older toasts are dropped past this so the stack never covers the viewport. */
+export const MAX_VISIBLE_TOASTS = 4;
+
+export function statusToSeverity(status: Notification['status']): ToastSeverity {
+  switch (status) {
+    case 'SENT':
+      return 'success';
+    case 'FAILED':
+      return 'error';
+    case 'PENDING':
+      return 'warning';
+    default:
+      return 'info';
+  }
+}
+
+export interface ToastQueue {
+  toasts: Toast[];
+  paused: boolean;
+  push: (toast: Toast) => void;
+  dismiss: (id: string) => void;
+  pause: () => void;
+  resume: () => void;
+}
+
+/**
+ * Queue behind the toast stack: newest-last ordering, a hard cap on visible
+ * toasts, auto-dismiss after `duration`, and a pause that freezes the
+ * remaining time of every toast rather than restarting it on resume.
+ */
+export function useToastQueue(
+  duration: number = TOAST_DURATION_MS,
+  max: number = MAX_VISIBLE_TOASTS,
+): ToastQueue {
+  const [toasts, setToasts] = useState<QueuedToast[]>([]);
+  const [paused, setPaused] = useState(false);
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
+
+  const push = useCallback(
+    (toast: Toast) => {
+      setToasts((prev) => {
+        if (prev.some((item) => item.id === toast.id)) {
+          return prev;
+        }
+        const queued: QueuedToast = {
+          ...toast,
+          remainingMs: duration,
+          // A toast that arrives while the user is hovering the stack waits
+          // for the pointer to leave before its timer starts.
+          expiresAt: pausedRef.current ? null : Date.now() + duration,
+        };
+        return [...prev, queued].slice(-max);
+      });
+    },
+    [duration, max],
+  );
+
+  const dismiss = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((toast) => toast.id !== id));
+  }, []);
+
+  const pause = useCallback(() => {
+    setPaused((wasPaused) => {
+      if (wasPaused) return wasPaused;
+      const now = Date.now();
+      setToasts((prev) =>
+        prev.map((toast) => ({
+          ...toast,
+          remainingMs:
+            toast.expiresAt === null ? toast.remainingMs : Math.max(0, toast.expiresAt - now),
+          expiresAt: null,
+        })),
+      );
+      return true;
+    });
+  }, []);
+
+  const resume = useCallback(() => {
+    setPaused((wasPaused) => {
+      if (!wasPaused) return wasPaused;
+      const now = Date.now();
+      setToasts((prev) => prev.map((toast) => ({ ...toast, expiresAt: now + toast.remainingMs })));
+      return false;
+    });
+  }, []);
+
+  // One timer for the whole stack, rearmed at the earliest deadline.
+  useEffect(() => {
+    if (paused || toasts.length === 0) return;
+
+    const deadlines = toasts
+      .map((toast) => toast.expiresAt)
+      .filter((value): value is number => value !== null);
+    if (deadlines.length === 0) return;
+
+    const delay = Math.max(0, Math.min(...deadlines) - Date.now());
+    const timer = setTimeout(() => {
+      const now = Date.now();
+      setToasts((prev) => prev.filter((toast) => toast.expiresAt === null || toast.expiresAt > now));
+    }, delay);
+
+    return () => clearTimeout(timer);
+  }, [paused, toasts]);
+
+  return { toasts, paused, push, dismiss, pause, resume };
+}
+
+const SEVERITY_STYLE: Record<ToastSeverity, { card: string; icon: React.ReactNode }> = {
+  success: {
+    card: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-100',
+    icon: <Check size={18} className="text-emerald-400" aria-hidden="true" />,
+  },
+  warning: {
+    card: 'border-amber-500/40 bg-amber-500/10 text-amber-100',
+    icon: <AlertTriangle size={18} className="text-amber-400" aria-hidden="true" />,
+  },
+  error: {
+    card: 'border-red-500/40 bg-red-500/10 text-red-100',
+    icon: <AlertCircle size={18} className="text-red-400" aria-hidden="true" />,
+  },
+  info: {
+    card: 'border-sky-500/40 bg-sky-500/10 text-sky-100',
+    icon: <Info size={18} className="text-sky-400" aria-hidden="true" />,
+  },
+};
+
+export interface ToastContainerProps {
+  toasts: Toast[];
+  onDismiss: (id: string) => void;
+  /** Called when the pointer or keyboard focus enters the stack. */
+  onPause?: () => void;
+  /** Called when the pointer or keyboard focus leaves the stack. */
+  onResume?: () => void;
+}
+
+/**
+ * Floating stack of transient alerts pinned to the bottom-right corner.
+ * Hovering or focusing the stack pauses every auto-dismiss timer so a toast
+ * cannot vanish while it is being read or its close button is being reached.
+ */
+export const ToastContainer: React.FC<ToastContainerProps> = ({
+  toasts,
+  onDismiss,
+  onPause,
+  onResume,
+}) => (
+  <div
+    data-testid="toast-container"
+    aria-label="Notification alerts"
+    className="pointer-events-none fixed bottom-4 right-4 z-50 flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-2"
+    onMouseEnter={onPause}
+    onMouseLeave={onResume}
+    onFocus={onPause}
+    onBlur={onResume}
+  >
+    <AnimatePresence initial={false}>
+      {toasts.map((toast) => (
+        <motion.div
+          key={toast.id}
+          layout
+          initial={{ opacity: 0, x: 24 }}
+          animate={{ opacity: 1, x: 0 }}
+          exit={{ opacity: 0, x: 24 }}
+          transition={{ duration: 0.2 }}
+          data-severity={toast.severity}
+          role={toast.severity === 'error' ? 'alert' : 'status'}
+          className={`pointer-events-auto flex items-start gap-3 rounded-xl border p-3 shadow-lg backdrop-blur-md ${
+            SEVERITY_STYLE[toast.severity].card
+          }`}
+        >
+          <span className="mt-0.5 shrink-0">{SEVERITY_STYLE[toast.severity].icon}</span>
+          <p className="flex-1 text-sm leading-relaxed">{toast.message}</p>
+          <button
+            type="button"
+            onClick={() => onDismiss(toast.id)}
+            aria-label={`Dismiss notification: ${toast.message}`}
+            className="shrink-0 rounded p-1 text-slate-300 transition-colors hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-text"
+          >
+            <X size={14} aria-hidden="true" />
+          </button>
+        </motion.div>
+      ))}
+    </AnimatePresence>
+  </div>
+);
+
 export const NotificationCenter: React.FC<NotificationCenterProps> = ({
   apiBaseUrl = 'http://localhost:3002',
   onOpenPreferences,
@@ -26,10 +247,102 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<'all' | 'PENDING' | 'SENT' | 'FAILED'>('all');
   const [refreshing, setRefreshing] = useState(false);
+  const [streamStatus, setStreamStatus] = useState<'idle' | 'connected' | 'reconnecting'>('idle');
+  const { toasts, push, dismiss, pause, resume } = useToastQueue();
+
+  // Held in a ref so the stream effect never has to re-subscribe when the
+  // queue callbacks change identity.
+  const pushToast = useRef(push);
+  pushToast.current = push;
 
   useEffect(() => {
     fetchNotifications();
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let eventSource: EventSource | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let backoffMs = INITIAL_BACKOFF_MS;
+
+    const clearTimer = () => {
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+    };
+
+    const connect = () => {
+      if (cancelled) {
+        return;
+      }
+
+      eventSource?.close();
+      const base = apiBaseUrl.replace(/\/$/, '');
+      eventSource = new EventSource(`${base}${STREAM_PATH}`);
+
+      eventSource.onopen = () => {
+        if (cancelled) {
+          return;
+        }
+        backoffMs = INITIAL_BACKOFF_MS;
+        setStreamStatus('connected');
+      };
+
+      eventSource.onmessage = (event) => {
+        if (cancelled) {
+          return;
+        }
+        try {
+          const payload = JSON.parse(event.data) as unknown;
+          const candidate =
+            payload && typeof payload === 'object' && 'data' in payload
+              ? (payload as { data: unknown }).data
+              : payload;
+          if (!isNotification(candidate)) {
+            return;
+          }
+          setNotifications((prev) => {
+            if (prev.some((item) => item.id === candidate.id)) {
+              return prev;
+            }
+            // Only surface a toast for a notification the session has not
+            // already seen, so a reconnect replay does not re-announce it.
+            pushToast.current({
+              id: candidate.id,
+              message: candidate.message,
+              severity: statusToSeverity(candidate.status),
+            });
+            return [candidate, ...prev];
+          });
+        } catch {
+          // Ignore keep-alive comments and malformed frames.
+        }
+      };
+
+      eventSource.onerror = () => {
+        if (cancelled) {
+          return;
+        }
+        eventSource?.close();
+        eventSource = null;
+        setStreamStatus('reconnecting');
+        clearTimer();
+        const delay = backoffMs;
+        backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
+        reconnectTimer = setTimeout(connect, delay);
+      };
+    };
+
+    connect();
+
+    return () => {
+      cancelled = true;
+      clearTimer();
+      eventSource?.close();
+      eventSource = null;
+    };
+  }, [apiBaseUrl]);
 
   const fetchNotifications = async (showRefreshing = false) => {
     if (showRefreshing) {
@@ -53,7 +366,12 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
       }
 
       const data = await response.json();
-      setNotifications(data.data || []);
+      const incoming: Notification[] = data.data || [];
+      setNotifications((prev) => {
+        const seen = new Set(incoming.map((item) => item.id));
+        const liveOnly = prev.filter((item) => !seen.has(item.id));
+        return [...liveOnly, ...incoming];
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
       console.error('Error fetching notifications:', err);
@@ -124,6 +442,12 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
 
   return (
     <div className="space-y-6">
+      <ToastContainer toasts={toasts} onDismiss={dismiss} onPause={pause} onResume={resume} />
+      {streamStatus === 'reconnecting' && (
+        <p role="status" className="text-xs text-slate-400">
+          Reconnecting event stream...
+        </p>
+      )}
       {/* Stats Cards */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div className="glass-card p-4">
@@ -241,7 +565,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
             </p>
           </div>
         ) : (
-          <div className="divide-y divide-slate-600">
+          <div data-testid="notification-list" className="divide-y divide-slate-600">
             {filteredNotifications.map((notification, index) => (
               <motion.div
                 key={notification.id}

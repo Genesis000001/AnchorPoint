@@ -12,6 +12,7 @@ import {
   Networks,
   Operation,
   Asset,
+  FeeBumpTransaction,
   xdr,
 } from '@stellar/stellar-sdk';
 import { v4 as uuidv4 } from 'uuid';
@@ -24,12 +25,19 @@ import {
   RelayerConfig,
   SignatureVerificationResult,
   ApprovalTransaction,
+  FeeEstimateResponse,
+  FeeBumpRequest,
+  FeeBumpResponse,
 } from '../types/relayer.types';
 
 const DEFAULT_CONFIG: Partial<RelayerConfig> = {
   maxAmount: '1000000',
   allowedSpenders: [],
   expiryWindowSeconds: 3600, // 1 hour
+  baseFee: 100,
+  surgeMultiplier: 1.2,
+  maxFeeCap: 10000,
+  dynamicFeesEnabled: true,
 };
 
 export class RelayerService {
@@ -58,6 +66,76 @@ export class RelayerService {
     }
 
     this.relayerKeypair = Keypair.fromSecret(this.config.relayerSecretKey);
+  }
+
+  /**
+   * Fetch dynamic fee stats from Horizon and compute recommended fee with surge multiplier & cap
+   */
+  async getFeeEstimate(surgeMultiplierOverride?: number): Promise<FeeEstimateResponse> {
+    const network = stellarService.getNetwork();
+    const fallbackBaseFee = this.config.baseFee || 100;
+    const multiplier = surgeMultiplierOverride ?? this.config.surgeMultiplier ?? 1.2;
+    const maxFeeCap = this.config.maxFeeCap || 10000;
+
+    try {
+      const server = stellarService.getHorizonServer(network);
+      const feeStats = await server.feeStats();
+
+      const baseFee = feeStats?.fee_charged?.min
+        ? parseInt(feeStats.fee_charged.min, 10)
+        : (feeStats?.min_accepted_fee ? parseInt(feeStats.min_accepted_fee, 10) : fallbackBaseFee);
+
+      const modeFee = feeStats?.fee_charged?.mode
+        ? parseInt(feeStats.fee_charged.mode, 10)
+        : baseFee;
+
+      const p90Fee = feeStats?.fee_charged?.p90
+        ? parseInt(feeStats.fee_charged.p90, 10)
+        : modeFee;
+
+      const maxFee = feeStats?.fee_charged?.max
+        ? parseInt(feeStats.fee_charged.max, 10)
+        : p90Fee;
+
+      const ledgerCapacityUsage = feeStats?.ledger_capacity_usage
+        ? parseFloat(feeStats.ledger_capacity_usage)
+        : 0;
+
+      // Select reference fee based on network congestion or mode/p90
+      const referenceFee = Math.max(baseFee, modeFee, p90Fee);
+      const rawRecommended = Math.ceil(referenceFee * multiplier);
+
+      // Apply max fee cap protection
+      const recommendedFee = Math.min(Math.max(rawRecommended, baseFee), maxFeeCap);
+
+      return {
+        baseFee,
+        recommendedFee,
+        surgeMultiplier: multiplier,
+        maxFeeCap,
+        modeFee,
+        p90Fee,
+        minFee: baseFee,
+        maxFee,
+        ledgerCapacityUsage,
+      };
+    } catch (error) {
+      logger.warn('Failed to fetch Horizon fee stats, falling back to static base fee:', error);
+      const rawRecommended = Math.ceil(fallbackBaseFee * multiplier);
+      const recommendedFee = Math.min(rawRecommended, maxFeeCap);
+
+      return {
+        baseFee: fallbackBaseFee,
+        recommendedFee,
+        surgeMultiplier: multiplier,
+        maxFeeCap,
+        modeFee: fallbackBaseFee,
+        p90Fee: fallbackBaseFee,
+        minFee: fallbackBaseFee,
+        maxFee: fallbackBaseFee,
+        ledgerCapacityUsage: 0,
+      };
+    }
   }
 
   /**
@@ -109,8 +187,6 @@ export class RelayerService {
       const signatureBuffer = Buffer.from(request.signature, 'base64');
       const publicKeyBuffer = Buffer.from(request.userPublicKey, 'base64');
       
-      // In a real implementation, you would use Stellar's signature verification
-      // For now, we'll use a simplified verification
       const isValid = this.verifyEd25519Signature(
         message,
         signatureBuffer,
@@ -138,15 +214,14 @@ export class RelayerService {
   }
 
   /**
-   * Build a token approval transaction
+   * Build a token approval transaction with dynamic fee estimation
    */
   async buildApprovalTransaction(
-    request: TokenApprovalRequest
+    request: TokenApprovalRequest,
+    customFee?: number
   ): Promise<ApprovalTransaction> {
     const network = stellarService.getNetwork();
-    const networkConfig = stellarService.getNetwork();
     const networkPassphrase = stellarService.getPassphrase(network);
-    const horizonUrl = stellarService.getHorizonServer(network).serverURL.toString();
 
     // Determine asset
     let asset: Asset;
@@ -156,6 +231,13 @@ export class RelayerService {
       asset = Asset.native();
     }
 
+    // Determine dynamic fee
+    let feeNumber: number = customFee || 100;
+    if (!customFee) {
+      const estimate = await this.getFeeEstimate();
+      feeNumber = estimate.recommendedFee;
+    }
+
     // Fetch source account
     const sourceAccount = await stellarService
       .getHorizonServer(network)
@@ -163,7 +245,7 @@ export class RelayerService {
 
     // Build transaction with approval operation
     const transaction = new TransactionBuilder(sourceAccount, {
-      fee: '100',
+      fee: feeNumber.toString(),
       networkPassphrase,
     })
       .addOperation(
@@ -183,13 +265,82 @@ export class RelayerService {
     return {
       transactionXdr: transaction.toXDR(),
       networkPassphrase,
-      fee: 100,
+      fee: feeNumber,
       operations: 1,
     };
   }
 
   /**
-   * Submit a signed transaction on behalf of a user
+   * Build a Fee Bump transaction to resubmit a congested/underpriced transaction
+   */
+  async buildFeeBumpTransaction(
+    innerTxXdr: string,
+    bumpFeeStroops?: number,
+    networkPassphrase?: string
+  ): Promise<FeeBumpTransaction> {
+    const network = stellarService.getNetwork();
+    const passphrase = networkPassphrase || stellarService.getPassphrase(network);
+
+    const innerTx = TransactionBuilder.fromXDR(innerTxXdr, passphrase) as Transaction;
+
+    let feeToApply = bumpFeeStroops;
+    if (!feeToApply) {
+      const estimate = await this.getFeeEstimate(1.5); // Apply higher multiplier for bump
+      const innerFee = parseInt(innerTx.fee, 10) || 100;
+      feeToApply = Math.max(estimate.recommendedFee, innerFee * 2);
+      if (this.config.maxFeeCap && feeToApply > this.config.maxFeeCap) {
+        feeToApply = this.config.maxFeeCap;
+      }
+    }
+
+    const feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(
+      this.relayerKeypair,
+      feeToApply.toString(),
+      innerTx,
+      passphrase
+    );
+
+    feeBumpTx.sign(this.relayerKeypair);
+    return feeBumpTx;
+  }
+
+  /**
+   * Resubmit a transaction with fee bump
+   */
+  async submitFeeBump(request: FeeBumpRequest): Promise<FeeBumpResponse> {
+    try {
+      const network = stellarService.getNetwork();
+      const passphrase = request.networkPassphrase || stellarService.getPassphrase(network);
+
+      const feeBumpTx = await this.buildFeeBumpTransaction(
+        request.transactionXdr,
+        request.maxFee,
+        passphrase
+      );
+
+      const result = await stellarService
+        .getHorizonServer(network)
+        .submitTransaction(feeBumpTx);
+
+      logger.info('Fee bump transaction submitted successfully:', result.hash);
+
+      return {
+        success: true,
+        feeBumpTransactionXdr: feeBumpTx.toXDR(),
+        transactionHash: result.hash,
+        fee: parseInt(feeBumpTx.fee, 10),
+      };
+    } catch (error: any) {
+      logger.error('Fee bump submission error:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Fee bump submission failed',
+      };
+    }
+  }
+
+  /**
+   * Submit a signed transaction on behalf of a user with automatic fee bump retry on congestion
    */
   async submitSignedTransaction(
     request: SignedTransactionRequest
@@ -201,7 +352,7 @@ export class RelayerService {
         request.networkPassphrase
       ) as Transaction;
 
-      // Verify transaction is signed by the user
+      // Verify transaction is signed
       const signatures = transaction.signatures;
       if (signatures.length === 0) {
         return {
@@ -224,6 +375,30 @@ export class RelayerService {
       };
     } catch (error: any) {
       logger.error('Transaction submission error:', error);
+      const isFeeError =
+        error?.response?.data?.extras?.result_codes?.transaction === 'tx_insufficient_fee' ||
+        /insufficient fee|fee too small/i.test(error?.message || '');
+
+      // If submission failed due to fee congestion, attempt fee bump resubmission
+      if (isFeeError) {
+        logger.warn('Encountered tx_insufficient_fee, attempting automatic fee bump resubmission...');
+        try {
+          const bumpResult = await this.submitFeeBump({
+            transactionXdr: request.signedTransactionXdr,
+            networkPassphrase: request.networkPassphrase,
+          });
+
+          if (bumpResult.success && bumpResult.transactionHash) {
+            return {
+              success: true,
+              transactionHash: bumpResult.transactionHash,
+            };
+          }
+        } catch (bumpErr) {
+          logger.error('Automatic fee bump resubmission failed:', bumpErr);
+        }
+      }
+
       if (error?.response?.data?.extras) {
         logger.error('Horizon error details:', {
           resultCodes: error.response.data.extras.result_codes,
@@ -238,7 +413,7 @@ export class RelayerService {
   }
 
   /**
-   * Process a token approval request end-to-end
+   * Process a token approval request end-to-end with dynamic fee estimation and queueing
    */
   async processApprovalRequest(
     request: TokenApprovalRequest
@@ -252,10 +427,10 @@ export class RelayerService {
       };
     }
 
-    // Build transaction
+    // Build transaction with dynamic fee estimation
     const approvalTx = await this.buildApprovalTransaction(request);
 
-    // Submit transaction
+    // Submit transaction with fee bump fallback
     const result = await this.submitSignedTransaction({
       signedTransactionXdr: approvalTx.transactionXdr,
       networkPassphrase: approvalTx.networkPassphrase,
@@ -282,8 +457,7 @@ export class RelayerService {
   }
 
   /**
-   * Verify Ed25519 signature (simplified version)
-   * In production, use proper cryptographic verification
+   * Verify Ed25519 signature
    */
   private verifyEd25519Signature(
     message: string,
@@ -291,14 +465,9 @@ export class RelayerService {
     publicKey: Buffer
   ): boolean {
     try {
-      // This is a simplified verification
-      // In production, use @stellar/stellar-sdk's signature verification
-      // or the sodium crypto library
       const crypto = require('crypto');
       const messageBuffer = Buffer.from(message, 'utf8');
       
-      // Using Node's crypto for demonstration
-      // In Stellar, you would use the SDK's verify function
       return crypto.verify(
         'ed25519',
         publicKey,
@@ -332,4 +501,9 @@ export const relayerService = new RelayerService({
   maxAmount: process.env.RELAYER_MAX_AMOUNT || '1000000',
   allowedSpenders: process.env.RELAYER_ALLOWED_SPENDERS?.split(',') || [],
   expiryWindowSeconds: parseInt(process.env.RELAYER_EXPIRY_WINDOW || '3600', 10),
+  baseFee: parseInt(process.env.RELAYER_BASE_FEE || '100', 10),
+  surgeMultiplier: parseFloat(process.env.RELAYER_FEE_SURGE_MULTIPLIER || '1.2'),
+  maxFeeCap: parseInt(process.env.RELAYER_MAX_FEE_CAP || '10000', 10),
+  dynamicFeesEnabled: process.env.RELAYER_DYNAMIC_FEES_ENABLED !== 'false',
 });
+

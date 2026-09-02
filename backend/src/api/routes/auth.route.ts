@@ -15,6 +15,24 @@ const mockRedisClient = {
 
 const redisService = new RedisService(mockRedisClient);
 
+// Explicitly handle CORS pre-flight for SEP-10 endpoints to ensure
+// external web wallets can perform OPTIONS pre-flight checks.
+router.options('/', (req: Request, res: Response) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  return res.sendStatus(204);
+});
+
+router.options('/token', (req: Request, res: Response) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  return res.sendStatus(204);
+});
+
 /**
  * @swagger
  * /auth:
@@ -100,6 +118,30 @@ const redisService = new RedisService(mockRedisClient);
  *               $ref: '#/components/schemas/Error'
  */
 router.post('/', async (req: Request, res: Response) => {
+  return getChallenge(req, res, redisService);
+});
+
+/**
+ * @swagger
+ * /auth:
+ *   get:
+ *     summary: SEP-10 Challenge Endpoint (GET)
+ *     description: Generates a SEP-10 challenge transaction. Account is supplied as a query parameter.
+ *     tags: [Auth]
+ *     parameters:
+ *       - in: query
+ *         name: account
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Stellar account public key
+ *     responses:
+ *       200:
+ *         description: Challenge transaction generated
+ *       400:
+ *         description: Invalid request parameters
+ */
+router.get('/', async (req: Request, res: Response) => {
   return getChallenge(req, res, redisService);
 });
 
@@ -206,6 +248,40 @@ router.post('/token', async (req: Request, res: Response) => {
  */
 router.post('/refresh', async (req: Request, res: Response) => {
   return refreshToken(req, res);
+});
+
+import { revokeToken } from '../../services/jwt-blacklist.service';
+
+/**
+ * @swagger
+ * /auth/logout:
+ *   post:
+ *     summary: Logout and revoke JWT token
+ *     description: Revokes the current JWT token so it can no longer be used for authentication.
+ *     tags: [Auth]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Token successfully revoked
+ *       401:
+ *         description: Invalid or missing token
+ */
+router.post('/logout', async (req: Request, res: Response) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Missing or invalid Authorization header' });
+  }
+  const token = authHeader.split(' ')[1];
+  try {
+    const jwt = require('jsonwebtoken');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || '') as any;
+    const expiresIn = decoded.exp ? decoded.exp - Math.floor(Date.now() / 1000) : 3600;
+    await revokeToken(redisService, token, Math.max(expiresIn, 1));
+    return res.json({ message: 'Token revoked successfully' });
+  } catch (err) {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
 });
 
 export default router;

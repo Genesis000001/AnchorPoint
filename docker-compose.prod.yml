@@ -119,6 +119,25 @@ services:
     networks:
       - anchorpoint-production-network
 
+  smoke-test:
+    image: alpine:3.20
+    profiles:
+      - smoke
+    depends_on:
+      backend-1:
+        condition: service_healthy
+    environment:
+      TARGET_HOST: http://backend-1:3002
+      SMOKE_TEST_ACCOUNT: ${SMOKE_TEST_ACCOUNT:-GB7KUA47QKRI6Q6X7C3HOC2HEP6VJQRQWQYQF66VJPHJRVMEDJOVML6K}
+    volumes:
+      - ./scripts/smoke-test.sh:/smoke-test.sh:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "apk add --no-cache bash curl >/dev/null && bash /smoke-test.sh"
+    restart: "no"
+    networks:
+      - anchorpoint-production-network
+
 volumes:
   postgres-data:
     driver: local

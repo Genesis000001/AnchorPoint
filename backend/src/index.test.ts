@@ -45,7 +45,8 @@ describe('Backend API', () => {
     expect(res.statusCode).toEqual(200);
     expect(res.body.status).toEqual('UP');
     expect(res.body.services.database).toEqual('UP');
-    expect(res.body.services.redis).toEqual('UP');
+    expect(res.body.services.redis.status).toEqual('UP');
+    expect(typeof res.body.services.redis.latencyMs).toBe('number');
   });
 
   it('should return DOWN on health check when database is down', async () => {
@@ -55,7 +56,7 @@ describe('Backend API', () => {
     expect(res.statusCode).toEqual(503);
     expect(res.body.status).toEqual('DOWN');
     expect(res.body.services.database).toEqual('DOWN');
-    expect(res.body.services.redis).toEqual('UP');
+    expect(res.body.services.redis.status).toEqual('UP');
   });
 
   it('should return DOWN on health check when Redis is down', async () => {
@@ -65,7 +66,7 @@ describe('Backend API', () => {
     expect(res.statusCode).toEqual(503);
     expect(res.body.status).toEqual('DOWN');
     expect(res.body.services.database).toEqual('UP');
-    expect(res.body.services.redis).toEqual('DOWN');
+    expect(res.body.services.redis.status).toEqual('DOWN');
   });
 
   it('should return 200 on root access', async () => {
@@ -106,5 +107,18 @@ describe('Backend API', () => {
       expect(limiterLayers).toHaveLength(1);
       expect(routerLayers).toHaveLength(1);
     }
+  });
+
+  it('should mount SEP-1 stellar.toml and SEP-10 /auth challenge routes', () => {
+    const stack = (app as any)._router?.stack ?? [];
+    const hasToml = stack.some((layer: any) => (
+      layer?.regexp instanceof RegExp && layer.regexp.test('/.well-known/stellar.toml')
+    ));
+    const hasAuth = stack.some((layer: any) => (
+      layer?.regexp instanceof RegExp && layer.regexp.test('/auth')
+    ));
+
+    expect(hasToml).toBe(true);
+    expect(hasAuth).toBe(true);
   });
 });

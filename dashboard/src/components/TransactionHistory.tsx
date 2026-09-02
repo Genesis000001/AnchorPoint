@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   ArrowDownLeft,
   ArrowUpRight,
@@ -10,7 +10,6 @@ import {
   ChevronRight,
   Printer,
 } from 'lucide-react';
-import { useVirtualizer } from '@tanstack/react-virtual';
 import { TransactionStatusBadge } from './TransactionStatusBadge';
 import type { TransactionStatus } from './TransactionStatusBadge';
 import { CopyButton } from './Common/CopyButton';
@@ -21,6 +20,10 @@ type TransactionType = 'Deposit' | 'Withdrawal';
 type SortKey = 'type' | 'asset' | 'amount' | 'status' | 'date';
 type SortDir = 'asc' | 'desc';
 type ColumnAlign = 'left' | 'right';
+
+const PAGE_SIZES = [10, 25, 50] as const;
+type PageSize = (typeof PAGE_SIZES)[number];
+const DEFAULT_PAGE_SIZE: PageSize = 10;
 
 interface Transaction {
   id: string;
@@ -67,6 +70,35 @@ type TransactionUpdatePayload = {
 
 const fmtAmount = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+/**
+ * Page numbers to render, with 'gap' marking elided runs. Always keeps the
+ * first and last page reachable plus a window around the current one, so a
+ * 5000-row result set never paints hundreds of buttons.
+ */
+const getPageRange = (current: number, pageCount: number): (number | 'gap')[] => {
+  if (pageCount <= 7) {
+    return Array.from({ length: pageCount }, (_, i) => i + 1);
+  }
+
+  const pages = new Set<number>([1, pageCount, current]);
+  if (current - 1 > 1) pages.add(current - 1);
+  if (current + 1 < pageCount) pages.add(current + 1);
+
+  // Keep the strip a stable width when the cursor sits against either end.
+  if (current <= 3) [2, 3, 4].forEach((p) => pages.add(p));
+  if (current >= pageCount - 2) {
+    [pageCount - 3, pageCount - 2, pageCount - 1].forEach((p) => pages.add(p));
+  }
+
+  const sorted = [...pages].filter((p) => p >= 1 && p <= pageCount).sort((a, b) => a - b);
+
+  return sorted.reduce<(number | 'gap')[]>((acc, page, index) => {
+    if (index > 0 && page - sorted[index - 1] > 1) acc.push('gap');
+    acc.push(page);
+    return acc;
+  }, []);
+};
+
 const SortIcon = ({ col, sortKey, dir }: { col: SortKey; sortKey: SortKey; dir: SortDir }) => {
   if (col !== sortKey) return <ChevronsUpDown size={13} className="text-slate-600" aria-hidden="true" />;
   return dir === 'asc' ? (
@@ -78,9 +110,15 @@ const SortIcon = ({ col, sortKey, dir }: { col: SortKey; sortKey: SortKey; dir: 
 
 interface TransactionHistoryProps {
   socketUpdate?: TransactionUpdatePayload | null;
+  /**
+   * Notified with the API query params whenever the page or page size changes.
+   * Rows are still sliced locally from the in-memory set; wiring this to a
+   * fetch is what turns the controls into server-side pagination.
+   */
+  onPageChange?: (params: { limit: number; offset: number }) => void;
 }
 
-export const TransactionHistory = ({ socketUpdate }: TransactionHistoryProps) => {
+export const TransactionHistory = ({ socketUpdate, onPageChange }: TransactionHistoryProps) => {
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<TransactionStatus | 'All'>('All');
   const [dateFrom, setDateFrom] = useState('');
@@ -90,7 +128,8 @@ export const TransactionHistory = ({ socketUpdate }: TransactionHistoryProps) =>
   const [isLoading, setIsLoading] = useState(true);
   const [selectedTransaction, setSelectedTransaction] = useState<Transaction | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>(ALL_TRANSACTIONS);
-  const parentRef = useRef<HTMLDivElement | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<PageSize>(DEFAULT_PAGE_SIZE);
 
   useEffect(() => {
     const timer = setTimeout(() => setIsLoading(false), 1000);
@@ -152,7 +191,7 @@ export const TransactionHistory = ({ socketUpdate }: TransactionHistoryProps) =>
       const matchesTo = !dateTo || tx.date <= dateTo;
       return matchesQuery && matchesStatus && matchesFrom && matchesTo;
     });
-  }, [query, statusFilter, dateFrom, dateTo]);
+  }, [transactions, query, statusFilter, dateFrom, dateTo]);
 
   const sorted = useMemo(() => {
     return [...filtered].sort((a, b) => {
@@ -166,14 +205,25 @@ export const TransactionHistory = ({ socketUpdate }: TransactionHistoryProps) =>
     });
   }, [filtered, sortKey, sortDir]);
 
-  const virtualizer = useVirtualizer({
-    count: sorted.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => 72,
-    overscan: 8,
-  });
+  const total = sorted.length;
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
 
-  const virtualRows = virtualizer.getVirtualItems();
+  // A filter change can leave the cursor past the end; clamp rather than
+  // showing an empty page for a non-empty result set.
+  const currentPage = Math.min(page, pageCount);
+  const offset = (currentPage - 1) * pageSize;
+
+  const paginated = useMemo(
+    () => sorted.slice(offset, offset + pageSize),
+    [sorted, offset, pageSize],
+  );
+
+  const rangeStart = total === 0 ? 0 : offset + 1;
+  const rangeEnd = Math.min(offset + pageSize, total);
+
+  useEffect(() => {
+    onPageChange?.({ limit: pageSize, offset });
+  }, [onPageChange, pageSize, offset]);
 
   const HEADERS: { key: SortKey; label: string; align: ColumnAlign }[] = [
     { key: 'type', label: 'Type', align: 'left' },
@@ -276,16 +326,9 @@ export const TransactionHistory = ({ socketUpdate }: TransactionHistoryProps) =>
       <div className="glass-card overflow-x-auto">
         <table className="responsive-table w-full text-left" aria-label="Transaction history">
           <caption className="sr-only">
-            Transaction history — {sorted.length} result{sorted.length !== 1 ? 's' : ''}
+            Transaction history — {total} result{total !== 1 ? 's' : ''}
           </caption>
           <thead>
-      <div className="glass-card overflow-hidden">
-        <div ref={parentRef} className="max-h-[720px] overflow-y-auto">
-          <table className="responsive-table w-full text-left" aria-label="Transaction history">
-            <caption className="sr-only">
-              Transaction history — {sorted.length} result{sorted.length !== 1 ? 's' : ''}
-            </caption>
-            <thead>
             <tr className="border-b border-slate-600 text-sm text-slate-400">
               {HEADERS.map(({ key, label, align }) => (
                 <th
@@ -313,9 +356,9 @@ export const TransactionHistory = ({ socketUpdate }: TransactionHistoryProps) =>
               </th>
             </tr>
           </thead>
-          <tbody style={{ height: virtualizer.getTotalSize() }} className="relative">
+          <tbody>
             {isLoading ? (
-              Array.from({ length: 10 }).map((_, i) => (
+              Array.from({ length: pageSize }).map((_, i) => (
                 <tr key={`skeleton-${i}`} className="transition-colors hover:bg-slate-900/50">
                   <td className="p-4">
                     <div className="h-4 w-20 animate-pulse rounded bg-slate-800" />
@@ -370,7 +413,7 @@ export const TransactionHistory = ({ socketUpdate }: TransactionHistoryProps) =>
                       {tx.reference}
                       <CopyButton value={tx.reference} label="Transaction reference" />
                     </span>
-                  <td className="p-4 font-mono text-xs text-slate-500" data-label="Reference">{tx.reference}</td>
+                  </td>
                   <td className="p-4" data-label="Actions">
                     {tx.status === 'Completed' && (
                       <button
@@ -391,11 +434,92 @@ export const TransactionHistory = ({ socketUpdate }: TransactionHistoryProps) =>
         </table>
       </div>
 
-      <div className="text-sm text-slate-400">
-        <span aria-live="polite" aria-atomic="true">
-          {sorted.length === 0 ? 'No results' : `Showing 1–${sorted.length} of ${sorted.length}`}
-        </span>
-      </div>
+      <nav
+        className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+        aria-label="Transaction pagination"
+      >
+        <div className="flex items-center gap-3 text-sm text-slate-400">
+          <span aria-live="polite" aria-atomic="true">
+            {total === 0
+              ? 'No transactions'
+              : `Showing ${rangeStart}-${rangeEnd} of ${total} transaction${total !== 1 ? 's' : ''}`}
+          </span>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <label htmlFor="page-size" className="text-sm text-slate-400">
+            Rows per page
+          </label>
+          <select
+            id="page-size"
+            value={pageSize}
+            onChange={(e) => {
+              setPageSize(Number(e.target.value) as PageSize);
+              // Row 1 of the old page is rarely row 1 of the new one; restart.
+              setPage(1);
+            }}
+            className="input-field text-sm"
+          >
+            {PAGE_SIZES.map((size) => (
+              <option key={size} value={size}>
+                {size}
+              </option>
+            ))}
+          </select>
+
+          <button
+            type="button"
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={currentPage <= 1}
+            aria-label="Previous page"
+            className="action-button inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-800/50 px-2.5 py-1.5 text-sm text-slate-200 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-text"
+          >
+            <ChevronLeft size={16} aria-hidden="true" />
+            Previous
+          </button>
+
+          <ul className="flex items-center gap-1">
+            {getPageRange(currentPage, pageCount).map((entry, index) =>
+              entry === 'gap' ? (
+                <li
+                  key={`gap-${index}`}
+                  className="px-1.5 text-sm text-slate-500"
+                  aria-hidden="true"
+                >
+                  …
+                </li>
+              ) : (
+                <li key={entry}>
+                  <button
+                    type="button"
+                    onClick={() => setPage(entry)}
+                    aria-label={`Page ${entry}`}
+                    aria-current={entry === currentPage ? 'page' : undefined}
+                    className={`min-w-8 rounded-md px-2.5 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-text ${
+                      entry === currentPage
+                        ? 'border border-primary/30 bg-primary/20 text-primary-text'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {entry}
+                  </button>
+                </li>
+              ),
+            )}
+          </ul>
+
+          <button
+            type="button"
+            onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+            disabled={currentPage >= pageCount}
+            aria-label="Next page"
+            className="action-button inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-800/50 px-2.5 py-1.5 text-sm text-slate-200 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-text"
+          >
+            Next
+            <ChevronRight size={16} aria-hidden="true" />
+          </button>
+        </div>
+      </nav>
     </div>
   );
 };

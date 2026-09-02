@@ -8,7 +8,7 @@
 //! - Mathematical accuracy is ensured through careful integer operations
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Env, IntoVal, String,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address, Env, IntoVal, String,
 };
 
 /// Default voting credits allocated to each user
@@ -17,11 +17,19 @@ const DEFAULT_VOTING_CREDITS: i128 = 10_000;
 /// Default quorum percentage (20% of total possible votes)
 const DEFAULT_QUORUM_PERCENTAGE: i128 = 20;
 
+/// Minimum voting period (1 day)
+const MIN_TIMELOCK: u64 = 86400;
+
+/// Maximum voting period (14 days)
+const MAX_TIMELOCK: u64 = 1_209_600;
+
 /// Storage keys for governance contract data
 #[contracttype]
 pub enum DataKey {
     /// Administrator address authorized to execute proposals
     Admin,
+    /// Pending new admin address awaiting acceptance (2-step transfer)
+    PendingAdmin,
     /// Token contract address for voting power
     TokenContract,
     /// Counter for proposal IDs
@@ -40,6 +48,13 @@ pub enum DataKey {
     ProposalQuadraticCost(u32),
     /// User's quadratic cost spent on a proposal
     UserQuadraticCost(u32, Address),
+}
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum Error {
+    InvalidTimelockDuration = 1,
 }
 
 /// Proposal lifecycle states
@@ -132,6 +147,66 @@ impl GovernanceContract {
         env.storage()
             .instance()
             .set(&DataKey::QuorumPercentage, &DEFAULT_QUORUM_PERCENTAGE);
+    }
+
+    /// Step 1 of 2-step admin transfer: current admin proposes a new admin.
+    ///
+    /// The new admin is stored as a pending candidate. No ownership change occurs
+    /// until `claim_admin_role` is called by the pending admin.
+    ///
+    /// # Arguments
+    /// * `env`       – The environment
+    /// * `new_admin` – Address being nominated as the next admin
+    ///
+    /// # Panics
+    /// Panics if the caller is not the current admin.
+    pub fn propose_new_admin(env: Env, new_admin: Address) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
+        admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+
+        env.events().publish(
+            (symbol_short!("gov"), symbol_short!("prop_adm")),
+            (admin, new_admin),
+        );
+    }
+
+    /// Step 2 of 2-step admin transfer: pending admin accepts and claims the role.
+    ///
+    /// The pending admin must call this function and provide their own authorization.
+    /// Once accepted, the new admin is stored and the pending slot is cleared.
+    ///
+    /// # Panics
+    /// Panics if there is no pending admin proposal, or if the caller is not the
+    /// pending admin.
+    pub fn claim_admin_role(env: Env, new_admin: Address) {
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .expect("no pending admin");
+
+        assert!(new_admin == pending, "caller is not the pending admin");
+        new_admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Admin, &new_admin);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingAdmin);
+
+        env.events().publish(
+            (symbol_short!("gov"), symbol_short!("new_adm")),
+            new_admin,
+        );
     }
 
     /// Allocate voting credits to a user
@@ -259,6 +334,10 @@ impl GovernanceContract {
     ) -> u32 {
         creator.require_auth();
         assert!(voting_period > 0, "voting period must be positive");
+
+        if voting_period < MIN_TIMELOCK || voting_period > MAX_TIMELOCK {
+            panic_with_error!(&env, Error::InvalidTimelockDuration);
+        }
 
         let counter: u32 = env
             .storage()
@@ -843,9 +922,39 @@ mod tests {
             &creator,
             &String::from_str(&env, "Test Proposal"),
             &String::from_str(&env, "A proposal for testing"),
-            &3600u64,
+            &86400u64,
         );
         assert_eq!(proposal_id, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "HostError: Error(Contract, #1)")]
+    fn test_create_proposal_timelock_too_short() {
+        let (env, _, _) = setup();
+        let id = env.register(GovernanceContract, ());
+        let client = GovernanceContractClient::new(&env, &id);
+        let creator = Address::generate(&env);
+        client.create_proposal(
+            &creator,
+            &String::from_str(&env, "Test Proposal"),
+            &String::from_str(&env, "A proposal for testing"),
+            &86399u64, // MIN_TIMELOCK - 1
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "HostError: Error(Contract, #1)")]
+    fn test_create_proposal_timelock_too_long() {
+        let (env, _, _) = setup();
+        let id = env.register(GovernanceContract, ());
+        let client = GovernanceContractClient::new(&env, &id);
+        let creator = Address::generate(&env);
+        client.create_proposal(
+            &creator,
+            &String::from_str(&env, "Test Proposal"),
+            &String::from_str(&env, "A proposal for testing"),
+            &1209601u64, // MAX_TIMELOCK + 1
+        );
     }
 
     #[test]
@@ -876,7 +985,7 @@ mod tests {
             &creator,
             &String::from_str(&env, "Test Proposal"),
             &String::from_str(&env, "A proposal for testing"),
-            &3600u64,
+            &86400u64,
         );
         client.vote(&voter, &proposal_id, &true, &10i128);
 
@@ -914,7 +1023,7 @@ mod tests {
             &creator,
             &String::from_str(&env, "Test Proposal"),
             &String::from_str(&env, "A proposal for testing"),
-            &3600u64,
+            &86400u64,
         );
         client.vote(&voter, &proposal_id, &true, &10i128);
         client.vote(&voter, &proposal_id, &true, &10i128);
@@ -939,11 +1048,85 @@ mod tests {
             &creator,
             &String::from_str(&env, "Test Proposal"),
             &String::from_str(&env, "A proposal for testing"),
-            &3600u64,
+            &86400u64,
         );
 
         // Try to cast 11 votes (cost = 121, but only have 100 credits)
         client.vote(&voter, &proposal_id, &true, &11i128);
+    }
+
+    #[test]
+    fn test_propose_and_claim_admin() {
+        let (env, admin, _token) = setup();
+        let id = env.register(GovernanceContract, ());
+        let client = GovernanceContractClient::new(&env, &id);
+        let token_contract = env.register(MockToken, ());
+        client.initialize(&admin, &token_contract);
+
+        let new_admin = Address::generate(&env);
+
+        // Step 1: current admin proposes a new admin
+        client.propose_new_admin(&new_admin);
+
+        // Step 2: new admin claims the role
+        client.claim_admin_role(&new_admin);
+
+        // New admin should now be able to allocate credits (admin-only action)
+        let user = Address::generate(&env);
+        client.allocate_credits(&new_admin, &user, &100);
+        assert_eq!(client.get_credits(&user), 100);
+    }
+
+    #[test]
+    #[should_panic(expected = "no pending admin")]
+    fn test_claim_admin_without_proposal_panics() {
+        let (env, admin, _token) = setup();
+        let id = env.register(GovernanceContract, ());
+        let client = GovernanceContractClient::new(&env, &id);
+        let token_contract = env.register(MockToken, ());
+        client.initialize(&admin, &token_contract);
+
+        let new_admin = Address::generate(&env);
+        // No proposal made, claiming should panic
+        client.claim_admin_role(&new_admin);
+    }
+
+    #[test]
+    #[should_panic(expected = "caller is not the pending admin")]
+    fn test_claim_admin_wrong_address_panics() {
+        let (env, admin, _token) = setup();
+        let id = env.register(GovernanceContract, ());
+        let client = GovernanceContractClient::new(&env, &id);
+        let token_contract = env.register(MockToken, ());
+        client.initialize(&admin, &token_contract);
+
+        let new_admin = Address::generate(&env);
+        let impersonator = Address::generate(&env);
+
+        // Propose new_admin but try to claim with a different address
+        client.propose_new_admin(&new_admin);
+        client.claim_admin_role(&impersonator);
+    }
+
+    #[test]
+    fn test_old_admin_loses_access_after_transfer() {
+        let (env, admin, _token) = setup();
+        let id = env.register(GovernanceContract, ());
+        let client = GovernanceContractClient::new(&env, &id);
+        let token_contract = env.register(MockToken, ());
+        client.initialize(&admin, &token_contract);
+
+        let new_admin = Address::generate(&env);
+        client.propose_new_admin(&new_admin);
+        client.claim_admin_role(&new_admin);
+
+        // Old admin should no longer be able to allocate credits
+        let user = Address::generate(&env);
+        // This should panic because admin is no longer the admin
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.allocate_credits(&admin, &user, &100);
+        }));
+        assert!(result.is_err(), "old admin should no longer have access");
     }
 }
 
@@ -1014,7 +1197,7 @@ mod quadratic_voting_tests {
             &creator,
             &String::from_str(&env, "Quadratic Test"),
             &String::from_str(&env, "Testing quadratic voting efficiency"),
-            &3600u64,
+            &86400u64,
         );
 
         // Single voter with 100 credits casting 10 votes
@@ -1038,7 +1221,7 @@ mod quadratic_voting_tests {
             &creator,
             &String::from_str(&env, "Quadratic Test"),
             &String::from_str(&env, "Testing multiple voters"),
-            &3600u64,
+            &86400u64,
         );
 
         // 10 voters each with 1 credit, casting 1 vote each
@@ -1073,7 +1256,7 @@ mod quadratic_voting_tests {
             &creator,
             &String::from_str(&env, "Vote Record Test"),
             &String::from_str(&env, "Testing vote record storage"),
-            &3600u64,
+            &86400u64,
         );
 
         client.vote(&voter, &proposal_id, &false, &15);
@@ -1106,7 +1289,7 @@ mod quadratic_voting_tests {
             &creator,
             &String::from_str(&env, "Quorum Test"),
             &String::from_str(&env, "Testing quorum"),
-            &3600u64,
+            &86400u64,
         );
 
         let proposal = client.get_proposal(&proposal_id);

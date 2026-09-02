@@ -57,6 +57,59 @@ export const SkeletonChartCard = ({ className = '' }: { className?: string }) =>
   </div>
 );
 
+/**
+ * Placeholder that fills its container rather than a fixed height, so swapping
+ * it for the rendered chart canvas shifts nothing on screen (CLS).
+ *
+ * The header/legend flags mirror whichever chrome the host chart draws above
+ * its plot area; turning one off collapses that row.
+ */
+export const ChartSkeleton = ({
+  title = true,
+  subtitle = true,
+  controls = true,
+  legend = false,
+  bars = [45, 70, 35, 85, 60, 50, 75],
+  className = '',
+  label = 'Loading chart',
+}: {
+  title?: boolean;
+  subtitle?: boolean;
+  controls?: boolean;
+  legend?: boolean;
+  bars?: number[];
+  className?: string;
+  label?: string;
+}) => (
+  <LoadingRegion label={label}>
+    <div className={`flex h-full flex-col ${className}`} data-testid="chart-skeleton">
+      {(title || subtitle || controls) && (
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div className="space-y-2">
+            {title && <Skeleton className="h-5 w-40" />}
+            {subtitle && <Skeleton className="h-3 w-28" />}
+          </div>
+          {controls && <Skeleton className="h-8 w-32 rounded-lg" />}
+        </div>
+      )}
+
+      {legend && (
+        <div className="mb-2 flex gap-4">
+          <Skeleton className="h-3 w-20" />
+          <Skeleton className="h-3 w-24" />
+        </div>
+      )}
+
+      {/* Staggered heights read as a chart rather than a solid block. */}
+      <div className="flex min-h-64 flex-1 items-end gap-3">
+        {bars.map((height, index) => (
+          <Skeleton key={index} className="flex-1" style={{ height: `${height}%` }} />
+        ))}
+      </div>
+    </div>
+  </LoadingRegion>
+);
+
 /** Placeholder for a text-heavy panel such as the branding card. */
 export const SkeletonPanel = ({ rows = 3 }: { rows?: number }) => (
   <div className="glass-card space-y-4 p-6">

@@ -1083,7 +1083,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "slippage protection: amount out below minimum")]
+    #[should_panic(expected = "SlippageExceeded")]
     fn test_slippage_protection() {
         let (env, contract_id, _admin, alice, token_a, token_b) = setup();
         let client = MultiAssetSwapClient::new(&env, &contract_id);
@@ -1091,12 +1091,14 @@ mod tests {
         // Add liquidity
         client.mint(&alice, &-60, &60, &10_000, &10_000);
 
-        // Perform swap with unrealistic min_amount_out that will fail
+        // Perform swap with unrealistic min_amount_out that will fail.
+        // SwapError::SlippageExceeded is raised via panic_with_error! when
+        // amount_out < min_amount_out.
         let sqrt_price_limit = MultiAssetSwap::tick_to_sqrt_price_x96(-1);
         client.swap(
-            &alice, 
-            &token_a, 
-            &1_000, 
+            &alice,
+            &token_a,
+            &1_000,
             &sqrt_price_limit,
             &100_000  // Unrealistic minimum that will fail
         );

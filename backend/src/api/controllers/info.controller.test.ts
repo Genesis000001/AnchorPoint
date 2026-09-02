@@ -167,6 +167,21 @@ describe('Info Controller', () => {
       expect(sendMock).toHaveBeenCalled();
     });
 
+    it('should return TOML for GET /.well-known/stellar.toml', async () => {
+      mockRequest = {
+        query: {},
+        headers: {},
+        path: '/.well-known/stellar.toml',
+        originalUrl: '/.well-known/stellar.toml',
+        url: '/.well-known/stellar.toml',
+      };
+
+      await getInfo(mockRequest as Request, mockResponse as Response);
+
+      expect(setHeaderMock).toHaveBeenCalledWith('Content-Type', 'text/toml');
+      expect(sendMock).toHaveBeenCalled();
+    });
+
     it('should return TOML when Accept header includes text/toml', async () => {
       mockRequest.headers = { accept: 'text/toml' };
 
