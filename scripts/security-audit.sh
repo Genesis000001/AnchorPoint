@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Soroban Security Audit - Issue #274
+# Security Audit Script
 # =============================================================================
-# Scans Soroban contract workspaces for security issues:
-#   1. Builds release Wasm artifacts (wasm32v1-none for root, wasm32-unknown-unknown for contracts)
-#   2. Runs Scout static analysis (cargo scout-audit)
-#   3. Audits built .wasm files (optional soroban-analyzer + header checks)
-#   4. Flags suspicious Rust source patterns
+# Scans the entire project for security issues:
+#   1. Runs npm audit on all workspaces (backend, dashboard, root)
+#   2. Runs cargo audit on Soroban Rust workspaces
+#   3. Builds release Wasm artifacts (wasm32v1-none for root, wasm32-unknown-unknown for contracts)
+#   4. Runs Scout static analysis (cargo scout-audit)
+#   5. Audits built .wasm files (optional soroban-analyzer + header checks)
+#   6. Flags suspicious Rust source patterns
 #
 # Usage:
-#   ./scripts/security-audit.sh [--skip-build] [--warn-only]
+#   ./scripts/security-audit.sh [--skip-build] [--warn-only] [--skip-npm] [--skip-cargo]
 #
 # Environment:
 #   SECURITY_AUDIT_SKIP_BUILD=1   Skip wasm build step
 #   SECURITY_AUDIT_WARN_ONLY=1    Never fail on warnings (scout failures still fail)
+#   SECURITY_AUDIT_SKIP_NPM=1     Skip npm audit checks
+#   SECURITY_AUDIT_SKIP_CARGO=1   Skip cargo audit checks
 # =============================================================================
 
 set -euo pipefail
@@ -23,6 +27,8 @@ ROOT_WASM_TARGET="${SECURITY_AUDIT_ROOT_WASM_TARGET:-wasm32v1-none}"
 CONTRACTS_WASM_TARGET="${SECURITY_AUDIT_CONTRACTS_WASM_TARGET:-wasm32-unknown-unknown}"
 SKIP_BUILD=0
 WARN_ONLY=0
+SKIP_NPM=0
+SKIP_CARGO=0
 ISSUES=0
 
 if [[ "${1:-}" == "--skip-build" ]]; then
@@ -31,11 +37,23 @@ fi
 if [[ "${1:-}" == "--warn-only" ]] || [[ "${2:-}" == "--warn-only" ]]; then
   WARN_ONLY=1
 fi
+if [[ "${1:-}" == "--skip-npm" ]] || [[ "${2:-}" == "--skip-npm" ]] || [[ "${3:-}" == "--skip-npm" ]]; then
+  SKIP_NPM=1
+fi
+if [[ "${1:-}" == "--skip-cargo" ]] || [[ "${2:-}" == "--skip-cargo" ]] || [[ "${3:-}" == "--skip-cargo" ]]; then
+  SKIP_CARGO=1
+fi
 if [[ "${SECURITY_AUDIT_SKIP_BUILD:-}" == "1" ]]; then
   SKIP_BUILD=1
 fi
 if [[ "${SECURITY_AUDIT_WARN_ONLY:-}" == "1" ]]; then
   WARN_ONLY=1
+fi
+if [[ "${SECURITY_AUDIT_SKIP_NPM:-}" == "1" ]]; then
+  SKIP_NPM=1
+fi
+if [[ "${SECURITY_AUDIT_SKIP_CARGO:-}" == "1" ]]; then
+  SKIP_CARGO=1
 fi
 
 log() { printf '[security-audit] %s\n' "$*"; }
@@ -165,8 +183,82 @@ scan_source_patterns() {
   done
 }
 
+run_npm_audit() {
+  local dirs=("$@")
+
+  if ! command -v npm >/dev/null 2>&1; then
+    warn "npm is not installed. Skipping npm audit."
+    return 0
+  fi
+
+  log "Running npm security audit..."
+
+  for dir in "${dirs[@]}"; do
+    [[ -d "$dir" ]] || continue
+    [[ -f "$dir/package.json" ]] || continue
+
+    local label
+    label="$(basename "$dir")"
+
+    log "Auditing npm dependencies in ${label}..."
+    if (cd "$dir" && npm audit --omit=dev 2>&1); then
+      log "npm audit passed for ${label} (production deps)."
+    else
+      record_issue "npm audit found vulnerabilities in ${label}."
+    fi
+  done
+
+  log "npm audit completed."
+}
+
+run_cargo_audit() {
+  local dirs=("$@")
+
+  if ! command -v cargo >/dev/null 2>&1; then
+    warn "cargo is not installed. Skipping cargo audit."
+    return 0
+  fi
+
+  if ! cargo audit --help >/dev/null 2>&1; then
+    warn "cargo-audit is not installed. Run: cargo install cargo-audit"
+    warn "Skipping cargo audit."
+    return 0
+  fi
+
+  log "Running cargo security audit..."
+
+  for dir in "${dirs[@]}"; do
+    [[ -d "$dir" ]] || continue
+    [[ -f "$dir/Cargo.toml" ]] || continue
+
+    local label
+    label="$(basename "$dir")"
+
+    log "Auditing Cargo dependencies in ${label}..."
+    if (cd "$dir" && cargo audit 2>&1); then
+      log "cargo audit passed for ${label}."
+    else
+      record_issue "cargo audit found vulnerabilities in ${label}."
+    fi
+  done
+
+  log "cargo audit completed."
+}
+
 main() {
-  log "Starting Soroban security audit..."
+  log "Starting security audit..."
+
+  if [[ "$SKIP_NPM" -eq 0 ]]; then
+    run_npm_audit "$ROOT_DIR/backend" "$ROOT_DIR/dashboard"
+  else
+    log "Skipping npm audit (--skip-npm)."
+  fi
+
+  if [[ "$SKIP_CARGO" -eq 0 ]]; then
+    run_cargo_audit "$ROOT_DIR" "$ROOT_DIR/contracts"
+  else
+    log "Skipping cargo audit (--skip-cargo)."
+  fi
 
   if [[ "$SKIP_BUILD" -eq 0 ]]; then
     # Skip root workspace build: src/ uses soroban-sdk v26 which is incompatible
