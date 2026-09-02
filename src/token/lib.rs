@@ -5,6 +5,20 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short, Address, Env, IntoVal, String,
 };
 
+/// Maximum number of token transfers allowed in a single batch operation.
+const MAX_BATCH_SIZE: u32 = 100;
+
+/// Contract-level errors returned by batch operations.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum ContractError {
+    /// `token_ids` and `amounts` vectors have different lengths.
+    VectorLengthMismatch = 1,
+    /// The batch exceeds the maximum allowed size (100 transfers).
+    BatchTooLarge = 2,
+}
+
 #[contracttype]
 pub enum DataKey {
     Admin,
@@ -90,9 +104,18 @@ impl TokenContract {
         to: Address,
         token_ids: soroban_sdk::Vec<u64>,
         amounts: soroban_sdk::Vec<i128>,
-    ) {
+    ) -> Result<(), ContractError> {
         from.require_auth();
-        assert!(token_ids.len() == amounts.len(), "length mismatch");
+
+        // Validate that both vectors have the same length.
+        if token_ids.len() != amounts.len() {
+            return Err(ContractError::VectorLengthMismatch);
+        }
+
+        // Enforce max batch size to prevent resource exhaustion.
+        if token_ids.len() > MAX_BATCH_SIZE {
+            return Err(ContractError::BatchTooLarge);
+        }
 
         for i in 0..token_ids.len() {
             let token_id = token_ids.get(i).unwrap();
@@ -103,6 +126,8 @@ impl TokenContract {
         // Topic: event name only; from + to + token_ids in data.
         env.events()
             .publish((symbol_short!("batch_xf"),), (from, to, token_ids));
+
+        Ok(())
     }
 
     /// Approve `spender` to move up to `amount` of `token_id` on behalf of
@@ -711,14 +736,63 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "length mismatch")]
+    #[should_panic]
     fn test_batch_transfer_length_mismatch() {
         let (env, client, _) = setup();
         let alice = Address::generate(&env);
         let bob = Address::generate(&env);
         let ids = soroban_sdk::Vec::from_array(&env, [1, 2]);
-        let amounts = soroban_sdk::Vec::from_array(&env, [100]);
+        let amounts = soroban_sdk::Vec::from_array(&env, [100i128]);
         client.batch_transfer(&alice, &bob, &ids, &amounts);
+    }
+
+    #[test]
+    fn test_batch_transfer_returns_error_on_length_mismatch() {
+        let (env, client, _) = setup();
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+        let ids = soroban_sdk::Vec::from_array(&env, [1u64, 2u64]);
+        let amounts = soroban_sdk::Vec::from_array(&env, [100i128]);
+        // try_batch_transfer returns the Result directly without panicking
+        let result = client.try_batch_transfer(&alice, &bob, &ids, &amounts);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_batch_transfer_max_size_enforced() {
+        let (env, client, _) = setup();
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+
+        // Build a batch with exactly MAX_BATCH_SIZE (100) entries — should succeed
+        let mut ids = soroban_sdk::Vec::new(&env);
+        let mut amounts = soroban_sdk::Vec::new(&env);
+        for i in 1u64..=100 {
+            client.mint(&alice, &i, &1000);
+            ids.push_back(i);
+            amounts.push_back(1i128);
+        }
+        client.batch_transfer(&alice, &bob, &ids, &amounts);
+        assert_eq!(client.balance_of(&bob, &1), 1);
+        assert_eq!(client.balance_of(&bob, &100), 1);
+    }
+
+    #[test]
+    fn test_batch_transfer_exceeds_max_size_returns_error() {
+        let (env, client, _) = setup();
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+
+        // Build a batch with 101 entries — should fail with BatchTooLarge
+        let mut ids = soroban_sdk::Vec::new(&env);
+        let mut amounts = soroban_sdk::Vec::new(&env);
+        for i in 1u64..=101 {
+            client.mint(&alice, &i, &1000);
+            ids.push_back(i);
+            amounts.push_back(1i128);
+        }
+        let result = client.try_batch_transfer(&alice, &bob, &ids, &amounts);
+        assert!(result.is_err());
     }
 
     #[test]
