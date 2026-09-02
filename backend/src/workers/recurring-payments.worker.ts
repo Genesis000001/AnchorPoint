@@ -1,9 +1,11 @@
-import cron from 'node-cron';
+import cron, { ScheduledTask } from 'node-cron';
 import logger from '../utils/logger';
 import { RecurringPaymentsService } from '../services/recurring-payments.service';
 import { config } from '../config/env';
 
 const service = new RecurringPaymentsService();
+
+let scheduledTask: ScheduledTask | null = null;
 
 function startWorker(): void {
   const schedule = config.RECURRING_PAYMENTS_WORKER_CRON;
@@ -16,7 +18,7 @@ function startWorker(): void {
         return '*/1 * * * *';
       })();
 
-  cron.schedule(validSchedule, () => {
+  scheduledTask = cron.schedule(validSchedule, () => {
     service
       .processDueSchedules()
       .then((count) => {
@@ -37,8 +39,22 @@ function startWorker(): void {
     .catch((err) => logger.error(`Initial recurring payment processing failed: ${(err as Error).message}`));
 }
 
-if (require.main === module) {
-  startWorker();
+function stopWorker(): void {
+  if (scheduledTask) {
+    scheduledTask.stop();
+    scheduledTask = null;
+    logger.info('Recurring payments worker stopped');
+  }
 }
 
-export { startWorker };
+if (require.main === module) {
+  startWorker();
+  const shutdown = () => {
+    stopWorker();
+    process.exit(0);
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+}
+
+export { startWorker, stopWorker };

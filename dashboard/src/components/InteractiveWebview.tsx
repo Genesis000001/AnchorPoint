@@ -49,10 +49,41 @@ export const InteractiveWebview = ({
   }, []);
 
   useEffect(() => {
-    const handleMessage = (event: MessageEvent) => {
+    let expectedOrigin: string | null = null;
+    if (interactiveUrl) {
       try {
-        if (event.data?.type === 'resize' || (typeof event.data === 'string' && event.data.includes('resize'))) {
+        expectedOrigin = new URL(interactiveUrl).origin;
+      } catch (e) {
+        // Invalid URL
+      }
+    }
+
+    const handleMessage = (event: MessageEvent) => {
+      if (expectedOrigin && event.origin !== expectedOrigin) {
+        console.warn('Ignoring message from unexpected origin:', event.origin);
+        return;
+      }
+
+      try {
+        let data = event.data;
+        if (typeof data === 'string') {
+          try {
+            data = JSON.parse(data);
+          } catch (e) {
+            // Not a JSON string
+          }
+        }
+
+        if (data?.type === 'resize' || (typeof event.data === 'string' && event.data.includes('resize'))) {
           console.log('Interactive window resize message received', event.data);
+        }
+
+        if (data?.transaction?.status) {
+          const status = data.transaction.status;
+          if (status === 'pending_user_transfer_start' || status === 'completed') {
+            setWebviewState('approved');
+            setTimeout(() => onComplete(), 1200);
+          }
         }
       } catch (e) {
         // Ignore parsing errors
@@ -60,7 +91,7 @@ export const InteractiveWebview = ({
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, []);
+  }, [interactiveUrl, onComplete]);
 
   const handleLaunch = () => {
     setWebviewState('loading');
