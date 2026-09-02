@@ -12,3 +12,8 @@ edition = "2021"
 
 [workspace.dependencies]
 soroban-sdk = "22.0.0"
+# Pin ed25519-dalek to 2.x: soroban-env-host 22.x declares `>=2.0.0`, but
+# ed25519-dalek 3.x is API-incompatible with its testutils (`ChaCha20Rng` no
+# longer satisfies the `CryptoRng` bound). The workspace Cargo.lock is not
+# committed, so this keeps CI resolution deterministic.
+ed25519-dalek = "2.2"

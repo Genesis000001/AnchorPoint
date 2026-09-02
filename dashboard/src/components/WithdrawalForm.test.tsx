@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { WithdrawalForm } from './WithdrawalForm';
+import { I18nProvider } from '../i18n/config';
 import type { FeeEstimate } from '../lib/fees';
 
 const amountField = {
@@ -25,12 +27,14 @@ const tieredFee = (amount: number, feeFixed: number, feePercent: number): FeeEst
   feeMinimum: 0,
 });
 
+const renderWithI18n = (ui: ReactElement) => render(<I18nProvider>{ui}</I18nProvider>);
+
 const submitButton = (): HTMLButtonElement =>
   screen.getByRole('button', { name: /Continue to Verification/i }) as HTMLButtonElement;
 
 describe('WithdrawalForm fee preview calculator', () => {
   it('renders the fee summary placeholder before an amount is entered', () => {
-    render(
+    renderWithI18n(
       <WithdrawalForm
         fields={fullFields}
         assetCode="USDC"
@@ -46,7 +50,7 @@ describe('WithdrawalForm fee preview calculator', () => {
   it('estimates fees on debounced amount change and displays the payout breakdown', async () => {
     const onEstimateFee = vi.fn().mockResolvedValue(tieredFee(100, 0.5, 0.005));
 
-    render(
+    renderWithI18n(
       <WithdrawalForm
         fields={fullFields}
         assetCode="USDC"
@@ -69,7 +73,7 @@ describe('WithdrawalForm fee preview calculator', () => {
   it('debounces rapid amount changes into a single estimation request', async () => {
     const onEstimateFee = vi.fn().mockResolvedValue(tieredFee(120, 0.5, 0.005));
 
-    render(
+    renderWithI18n(
       <WithdrawalForm
         fields={fullFields}
         assetCode="USDC"
@@ -90,7 +94,7 @@ describe('WithdrawalForm fee preview calculator', () => {
   it('disables the submit button when the net payout is zero or negative', async () => {
     const onEstimateFee = vi.fn().mockResolvedValue(tieredFee(5, 10, 0));
 
-    render(
+    renderWithI18n(
       <WithdrawalForm
         fields={fullFields}
         assetCode="USDC"
@@ -109,7 +113,7 @@ describe('WithdrawalForm fee preview calculator', () => {
     const onEstimateFee = vi.fn().mockResolvedValue(tieredFee(120.5, 0.5, 0.005));
     const onSubmit = vi.fn();
 
-    render(
+    renderWithI18n(
       <WithdrawalForm
         fields={fullFields}
         assetCode="USDC"
@@ -136,7 +140,7 @@ describe('WithdrawalForm fee preview calculator', () => {
   it('does not trigger fee estimation for an empty or invalid amount', async () => {
     const onEstimateFee = vi.fn().mockResolvedValue(tieredFee(100, 0.5, 0.005));
 
-    render(
+    renderWithI18n(
       <WithdrawalForm
         fields={fullFields}
         assetCode="USDC"
@@ -158,7 +162,7 @@ describe('WithdrawalForm fee preview calculator', () => {
       .fn()
       .mockRejectedValue(new Error('Fee estimate request failed with status 500'));
 
-    render(
+    renderWithI18n(
       <WithdrawalForm
         fields={fullFields}
         assetCode="USDC"

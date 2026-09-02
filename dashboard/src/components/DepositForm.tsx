@@ -7,6 +7,7 @@ import { AlertCircle, CheckCircle2 } from 'lucide-react';
 import type { FieldRequirement } from '../types';
 import type { DepositError } from './DepositErrorAlert';
 import { DepositErrorAlert } from './DepositErrorAlert';
+import { useTranslation } from '../i18n/config';
 
 export interface FormValues {
   [key: string]: string;
@@ -30,6 +31,8 @@ interface DepositFormProps {
   /** Called with validated form values when the user submits */
   onSubmit: (values: FormValues) => void;
 }
+
+type TranslateFn = (key: string, params?: Record<string, string | number>) => string;
 
 /** SEP-24 alphanumeric asset codes are 1–12 uppercase alphanumeric characters. */
 export const ASSET_CODE_PATTERN = /^[A-Z0-9]{1,12}$/;
@@ -74,17 +77,24 @@ export function amountPattern(decimals: number): RegExp {
 /**
  * Single source of truth for field rules, shared by the Zod schema and by
  * tests. Returns an empty string when the value is acceptable.
+ *
+ * When a translation function is provided the messages are localized via the
+ * i18n framework; otherwise the English defaults are returned (kept for tests
+ * and callers that do not render under an `I18nProvider`).
  */
 export function validateField(
   field: FieldRequirement,
   value: string,
   assetCode: string,
   limits: AssetLimits,
+  t?: TranslateFn,
 ): string {
   const trimmed = value.trim();
 
   if (field.required && !trimmed) {
-    return `${field.label} is required.`;
+    return t
+      ? t('deposit.errors.required', { label: field.label })
+      : `${field.label} is required.`;
   }
 
   if (!trimmed) return '';
@@ -93,6 +103,14 @@ export function validateField(
 
   if (key.includes('amount')) {
     if (!amountPattern(limits.decimals).test(trimmed)) {
+      if (t) {
+        return limits.decimals > 0
+          ? t('deposit.errors.amountInvalid', {
+              decimals: limits.decimals,
+              s: limits.decimals === 1 ? '' : 's',
+            })
+          : t('deposit.errors.amountWholeNumber');
+      }
       return limits.decimals > 0
         ? `Enter a valid amount with up to ${limits.decimals} decimal place${
             limits.decimals === 1 ? '' : 's'
@@ -101,25 +119,39 @@ export function validateField(
     }
 
     const amount = Number.parseFloat(trimmed);
-    if (amount <= 0) return 'Deposit amount must be greater than zero.';
+    if (amount <= 0) return t ? t('deposit.errors.amountPositive') : 'Deposit amount must be greater than zero.';
     if (amount < limits.min) {
-      return `Minimum ${assetCode} deposit is ${formatAmount(limits.min, limits.decimals)}.`;
+      return t
+        ? t('deposit.errors.amountMin', {
+            asset: assetCode,
+            amount: formatAmount(limits.min, limits.decimals),
+          })
+        : `Minimum ${assetCode} deposit is ${formatAmount(limits.min, limits.decimals)}.`;
     }
     if (amount > limits.max) {
-      return `Maximum ${assetCode} deposit is ${formatAmount(limits.max, limits.decimals)}.`;
+      return t
+        ? t('deposit.errors.amountMax', {
+            asset: assetCode,
+            amount: formatAmount(limits.max, limits.decimals),
+          })
+        : `Maximum ${assetCode} deposit is ${formatAmount(limits.max, limits.decimals)}.`;
     }
   }
 
   if (key.includes('email') && !EMAIL_PATTERN.test(trimmed)) {
-    return 'Enter a valid email address.';
+    return t ? t('deposit.errors.emailInvalid') : 'Enter a valid email address.';
   }
 
   if ((key.includes('wallet') || key.includes('address')) && !WALLET_PATTERN.test(trimmed)) {
-    return 'Enter a valid Stellar wallet address starting with G.';
+    return t
+      ? t('deposit.errors.walletInvalid')
+      : 'Enter a valid Stellar wallet address starting with G.';
   }
 
   if (key.includes('asset') && !isValidAssetCode(trimmed)) {
-    return 'Enter a valid asset code (1-12 uppercase letters or digits).';
+    return t
+      ? t('deposit.errors.assetInvalid')
+      : 'Enter a valid asset code (1-12 uppercase letters or digits).';
   }
 
   return '';
@@ -133,12 +165,13 @@ export function buildDepositSchema(
   fields: FieldRequirement[],
   assetCode: string,
   limits: AssetLimits,
+  t?: TranslateFn,
 ) {
   const shape = Object.fromEntries(
     fields.map((field) => [
       field.key,
       z.string().superRefine((value, ctx) => {
-        const message = validateField(field, value ?? '', assetCode, limits);
+        const message = validateField(field, value ?? '', assetCode, limits, t);
         if (message) {
           ctx.addIssue({ code: 'custom', message });
         }
@@ -156,6 +189,7 @@ export const DepositForm = ({
   onSubmit,
 }: DepositFormProps) => {
   const formId = useId();
+  const { t } = useTranslation();
   const [formError, setFormError] = useState<DepositError | null>(null);
 
   const limits = useMemo(
@@ -163,8 +197,8 @@ export const DepositForm = ({
     [assetLimits, assetCode],
   );
   const schema = useMemo(
-    () => buildDepositSchema(fields, assetCode, limits),
-    [fields, assetCode, limits],
+    () => buildDepositSchema(fields, assetCode, limits, t),
+    [fields, assetCode, limits, t],
   );
   const defaultValues = useMemo(
     () => Object.fromEntries(fields.map((field) => [field.key, ''])) as FormValues,
@@ -206,9 +240,12 @@ export const DepositForm = ({
     const count = Object.keys(submitErrors).length || 1;
     setFormError({
       type: 'validation',
-      title: 'Unable to Process Deposit',
-      message: `Please fix ${count} validation error${count !== 1 ? 's' : ''} before continuing.`,
-      details: 'Review the highlighted fields below for specific issues.',
+      title: t('deposit.errors.title'),
+      message: t('deposit.errors.summary', {
+        count,
+        s: count !== 1 ? 's' : '',
+      }),
+      details: t('deposit.errors.details'),
       retryable: false,
     });
   };
@@ -217,7 +254,7 @@ export const DepositForm = ({
     <form
       onSubmit={handleSubmit(handleValid, handleInvalid)}
       noValidate
-      aria-label={`Deposit ${assetCode} details form`}
+      aria-label={t('deposit.formAriaLabel', { asset: assetCode })}
       className="space-y-5"
     >
       {/* Form-level error alert from submission or network failures */}
@@ -232,7 +269,10 @@ export const DepositForm = ({
         >
           <AlertCircle size={16} className="mt-0.5 shrink-0 text-amber-400" aria-hidden="true" />
           <p className="text-sm text-amber-300">
-            Please fix {errorCount} error{errorCount !== 1 ? 's' : ''} in the form before continuing.
+            {t('deposit.errors.inlineSummary', {
+              count: errorCount,
+              s: errorCount !== 1 ? 's' : '',
+            })}
           </p>
         </div>
       )}
@@ -254,11 +294,11 @@ export const DepositForm = ({
               {field.label}
               {field.required ? (
                 <span className="text-xs font-normal text-amber-400" aria-hidden="true">
-                  Required
+                  {t('deposit.required')}
                 </span>
               ) : (
                 <span className="text-xs font-normal text-slate-400" aria-hidden="true">
-                  Optional
+                  {t('deposit.optional')}
                 </span>
               )}
             </label>
@@ -320,7 +360,7 @@ export const DepositForm = ({
         type="submit"
         className="btn-primary w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-text"
       >
-        Continue to Verification
+        {t('deposit.submit')}
       </button>
     </form>
   );

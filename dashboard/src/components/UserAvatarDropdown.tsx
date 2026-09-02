@@ -24,6 +24,8 @@ interface UserAvatarDropdownProps {
   onNotifications?: () => void;
   /** Callback when "Sign Out" is selected */
   onSignOut?: () => void;
+  /** Formatted wallet address */
+  walletAddress?: string;
 }
 
 /** Derive initials from a display name (up to 2 characters). */
@@ -58,10 +60,55 @@ export const UserAvatarDropdown: React.FC<UserAvatarDropdownProps> = ({
   onSettings,
   onNotifications,
   onSignOut,
+  walletAddress,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [timeLeft, setTimeLeft] = useState<number | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const getAuthToken = () => localStorage.getItem('authToken');
+    const decodeExp = (token: string): number | null => {
+      try {
+        const payload = token.split('.')[1];
+        const decoded = JSON.parse(atob(payload));
+        if (decoded && typeof decoded.exp === 'number') return decoded.exp;
+      } catch {
+        // ignore
+      }
+      return null;
+    };
+
+    const interval = setInterval(() => {
+      const token = getAuthToken();
+      if (!token) {
+        setTimeLeft(null);
+        return;
+      }
+      const exp = decodeExp(token);
+      if (!exp) {
+        setTimeLeft(null);
+        return;
+      }
+      const remaining = Math.max(0, Math.floor(exp - Date.now() / 1000));
+      setTimeLeft(remaining);
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const displayTime = React.useMemo(() => {
+    if (timeLeft === null) return null;
+    const minutes = Math.floor(timeLeft / 60);
+    const seconds = timeLeft % 60;
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }, [timeLeft]);
+
+  const formatWalletAddress = (address: string) => {
+    if (address.length <= 8) return address;
+    return `${address.slice(0, 4)}...${address.slice(-4)}`;
+  };
 
   const initials = getInitials(displayName);
   const gradient = getAvatarGradient(displayName);
@@ -88,7 +135,7 @@ export const UserAvatarDropdown: React.FC<UserAvatarDropdownProps> = ({
 
   const copyEmail = async () => {
     try {
-      await navigator.clipboard.writeText(email);
+      await navigator.clipboard.writeText(walletAddress || email);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -99,6 +146,12 @@ export const UserAvatarDropdown: React.FC<UserAvatarDropdownProps> = ({
   const handleAction = (cb?: () => void) => {
     setIsOpen(false);
     cb?.();
+  };
+
+  const handleSignOutAction = () => {
+    localStorage.removeItem('authToken'); // JWT purge
+    setIsOpen(false);
+    onSignOut?.();
   };
 
   const menuItems = [
@@ -182,37 +235,49 @@ export const UserAvatarDropdown: React.FC<UserAvatarDropdownProps> = ({
             className="absolute right-0 z-50 mt-2 w-72 origin-top-right rounded-xl border border-slate-700/80 bg-slate-900/95 shadow-2xl backdrop-blur-md"
           >
             {/* Header */}
-            <div className="flex items-center gap-3 border-b border-slate-800 p-4">
-              <span
-                className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gradient-to-br ${gradient} text-sm font-bold text-white shadow-lg select-none`}
-                aria-hidden="true"
-              >
-                {initials}
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-semibold text-slate-100">{displayName}</p>
-                <button
-                  onClick={copyEmail}
-                  title="Copy email address"
-                  className="group mt-0.5 flex items-center gap-1 text-xs text-slate-500 transition-colors hover:text-slate-300 focus-visible:outline-none"
-                  aria-label={copied ? 'Email copied' : `Copy email: ${email}`}
+            <div className="flex flex-col border-b border-slate-800 p-4 gap-3">
+              <div className="flex items-center gap-3">
+                <span
+                  className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gradient-to-br ${gradient} text-sm font-bold text-white shadow-lg select-none`}
+                  aria-hidden="true"
                 >
-                  <span className="truncate">{email}</span>
-                  {copied ? (
-                    <Check size={11} className="shrink-0 text-emerald-400" aria-hidden="true" />
-                  ) : (
-                    <Copy
-                      size={11}
-                      className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
-                      aria-hidden="true"
-                    />
-                  )}
-                </button>
+                  {initials}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold text-slate-100">{displayName}</p>
+                  <button
+                    onClick={copyEmail}
+                    title={walletAddress ? "Copy wallet address" : "Copy email address"}
+                    className="group mt-0.5 flex items-center gap-1 text-xs text-slate-500 transition-colors hover:text-slate-300 focus-visible:outline-none"
+                    aria-label={copied ? 'Copied' : 'Copy'}
+                  >
+                    <span className="truncate">{walletAddress ? formatWalletAddress(walletAddress) : email}</span>
+                    {copied ? (
+                      <Check size={11} className="shrink-0 text-emerald-400" aria-hidden="true" />
+                    ) : (
+                      <Copy
+                        size={11}
+                        className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
+                        aria-hidden="true"
+                      />
+                    )}
+                  </button>
+                </div>
+                {/* Role badge */}
+                <span className="shrink-0 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-primary">
+                  {role}
+                </span>
               </div>
-              {/* Role badge */}
-              <span className="shrink-0 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-primary">
-                {role}
-              </span>
+              
+              {/* Session Status */}
+              {displayTime && (
+                <div className="flex items-center justify-between rounded-md bg-slate-800/50 px-3 py-2 text-xs">
+                  <span className="text-slate-400">Session Status</span>
+                  <span className={`font-medium ${timeLeft && timeLeft > 120 ? 'text-emerald-400' : 'text-amber-400'}`}>
+                    Active ({displayTime})
+                  </span>
+                </div>
+              )}
             </div>
 
             {/* Menu items */}
@@ -245,7 +310,7 @@ export const UserAvatarDropdown: React.FC<UserAvatarDropdownProps> = ({
               <button
                 id="user-menu-item-signout"
                 role="menuitem"
-                onClick={() => handleAction(onSignOut)}
+                onClick={handleSignOutAction}
                 className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-all hover:bg-red-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/40 group"
               >
                 <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-slate-700 bg-slate-800 transition-colors group-hover:border-red-500/30 group-hover:bg-red-500/10">

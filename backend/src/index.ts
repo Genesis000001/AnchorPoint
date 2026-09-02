@@ -46,6 +46,8 @@ import { uploadExpiryScheduler } from './workers/upload-expiry.scheduler';
 import { initSocket } from './lib/socket';
 import { kycExpiryScheduler } from './workers/kyc-expiry.scheduler';
 import { cleanupWorker } from './workers/cleanup.worker';
+import { feeReportWorker } from './workers/fee-report.worker';
+import contractQueueService from './services/contract-queue.service';
 import { checkMigrationsOnStartup } from './services/migration-check.service';
 
 let server: ReturnType<typeof app.listen> | null = null;
@@ -88,6 +90,8 @@ async function gracefulShutdown(signal: string): Promise<void> {
   // Drain BullMQ queue connections, then close the database and Redis.
   const steps: Array<[string, () => Promise<unknown>]> = [
     ['fee report queue', () => feeReportScheduler.closeQueue()],
+    ['fee report worker', () => feeReportWorker.close()],
+    ['contract queue service', () => contractQueueService.close()],
     ...dashboardQueues.map(
       (queue): [string, () => Promise<unknown>] => [`${queue.name} queue`, () => queue.close()]
     ),
