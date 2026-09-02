@@ -61,3 +61,26 @@ kubectl get ingress -n anchorpoint-testnet
 # - All resources labeled consistently: app=anchorpoint, environment=testnet
 # - Certificates reference the ClusterIssuer via spec.issuerRef
 # =============================================================================
+
+# =============================================================================
+# Certificate Lifecycle Management - Issue #1023
+# =============================================================================
+# Automated certificate renewal monitoring is now in place:
+#
+# - The Ingress (`infra/k8s/ingress-nginx/anchorpoint-testnet-ingress.yaml`)
+#   carries cert-manager annotations, including
+#   `acme.cert-manager.io/http01-edit-in-place: "true"` so renewals happen with
+#   no ingress downtime.
+#
+# - `scripts/smoke-test.sh` includes a `check_certificate_expiry` step that fails
+#   if any managed hostname has fewer than 14 days of certificate validity left.
+#   Override with CERT_HOSTS and CERT_MIN_DAYS_REMAINING.
+#
+# - `infra/monitoring/prometheus-alerts.yml` defines
+#   AnchorPointCertificateExpiringSoon (21 days, warning) and
+#   AnchorPointCertificateExpiringCritical (7 days, critical), which route via
+#   Alertmanager to PagerDuty and the #platform-cert-alerts Slack channel
+#   (see `infra/monitoring/alertmanager.yml`).
+#
+# - Full operational guidance lives in CERTIFICATE_LIFECYCLE.md in this directory.
+# =============================================================================

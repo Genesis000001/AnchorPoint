@@ -38,5 +38,7 @@ coverage/
 *.sw?
 
 # Testing
+mutants.out/
+mutants.out.old/
 test_snapshots/
 **/test_snapshots/

@@ -25,6 +25,7 @@ import authRouter from './api/routes/auth.route';
 import { errorHandler } from './api/middleware/error.middleware';
 import { metricsMiddleware, connectionTracker } from './api/middleware/metrics.middleware';
 import { securityHeadersMiddleware } from './api/middleware/security-headers.middleware';
+import { sanitizeBodyMiddleware } from './api/middleware/sanitize.middleware';
 import { tracingMiddleware } from './api/middleware/tracing.middleware';
 import configService from './services/config.service';
 import { stellarService } from './services/stellar.service';
@@ -44,6 +45,9 @@ import { validateStorageConfigOnStartup } from './services/storage-provider.serv
 import { uploadExpiryScheduler } from './workers/upload-expiry.scheduler';
 import { initSocket } from './lib/socket';
 import { kycExpiryScheduler } from './workers/kyc-expiry.scheduler';
+import { feeReportWorker } from './workers/fee-report.worker';
+import contractQueueService from './services/contract-queue.service';
+import { checkMigrationsOnStartup } from './services/migration-check.service';
 
 let server: ReturnType<typeof app.listen> | null = null;
 
@@ -57,6 +61,18 @@ function gracefulShutdown(signal: string): void {
   if (uploadExpiryScheduler) {
     uploadExpiryScheduler.stop();
   }
+
+  if (kycExpiryScheduler) {
+    kycExpiryScheduler.stop();
+  }
+
+  feeReportWorker.close().catch((err) => {
+    logger.error('Error closing fee report worker:', err);
+  });
+
+  contractQueueService.close().catch((err) => {
+    logger.error('Error closing contract queue service:', err);
+  });
 
   if (server) {
     server.close(() => {
@@ -101,14 +117,14 @@ app.use(securityHeadersMiddleware);
 app.use(tracingMiddleware);
 const PORT = config.PORT;
 
-const configuredOrigins = process.env.PRODUCTION_CORS_ORIGINS ?? '';
+const configuredOrigins = process.env.ALLOWED_ORIGINS || process.env.PRODUCTION_CORS_ORIGINS || '';
 const allowedOrigins = configuredOrigins
   .split(',')
   .map((origin) => origin.trim())
   .filter((origin) => origin.length > 0);
 
 if (process.env.NODE_ENV === 'production' && allowedOrigins.length === 0) {
-  throw new Error('PRODUCTION_CORS_ORIGINS must be configured in production.');
+  throw new Error('ALLOWED_ORIGINS (or PRODUCTION_CORS_ORIGINS) must be configured in production.');
 }
 
 const fallbackLocalOrigins = ['http://localhost:3000', 'http://127.0.0.1:3000'];
@@ -135,6 +151,7 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(sanitizeBodyMiddleware);
 
 /**
  * @swagger
@@ -218,6 +235,7 @@ app.get('/', (req: Request, res: Response) => {
 app.get('/health', async (req: Request, res: Response) => {
   let dbStatus = 'UP';
   let redisStatus = 'UP';
+  let redisLatency = 0;
   let sorobanRpcStatus = 'UP';
   let isHealthy = true;
 
@@ -230,10 +248,13 @@ app.get('/health', async (req: Request, res: Response) => {
   }
 
   try {
+    const start = Date.now();
     const pong = await redis.ping();
     if (pong !== 'PONG') {
       redisStatus = 'DOWN';
       isHealthy = false;
+    } else {
+      redisLatency = Date.now() - start;
     }
   } catch (err) {
     redisStatus = 'DOWN';
@@ -258,7 +279,7 @@ app.get('/health', async (req: Request, res: Response) => {
     timestamp: new Date().toISOString(),
     services: {
       database: dbStatus,
-      redis: redisStatus,
+      redis: { status: redisStatus, latencyMs: redisLatency },
       sorobanRpc: sorobanRpcStatus,
     },
   };
@@ -352,6 +373,8 @@ app.use(errorHandler);
 /* istanbul ignore next */
 if (process.env.NODE_ENV !== 'test') {
   (async () => {
+    await checkMigrationsOnStartup();
+
     validateKmsConfigOnStartup(config);
     await hydrateEncryptedConfigSecrets();
     const decryptionOk = await verifyDecryptionCapabilityOnStartup({
@@ -364,28 +387,13 @@ if (process.env.NODE_ENV !== 'test') {
       RELAYER_SECRET_KEY: process.env.RELAYER_SECRET_KEY,
       WEBHOOK_SECRET: process.env.WEBHOOK_SECRET,
       SIGNING_KEY: process.env.SIGNING_KEY,
-  validateKmsConfigOnStartup(config);
-  validateStorageConfigOnStartup();
-
-  configService.initialize()
-    .catch((error) => {
-      logger.error('Failed to initialize config service:', error);
-    })
-    .finally(() => {
-      initSocket(httpServer);
-      httpServer.listen(PORT, () => {
-      server = app.listen(PORT, () => {
-        logger.info(`Backend service listening at http://localhost:${PORT}`);
-        logger.info(`API Documentation available at http://localhost:${PORT}/api-docs`);
-        feeReportScheduler.start();
-        uploadExpiryScheduler.start();
-        kycExpiryScheduler.start();
-      });
     });
+
     if (!decryptionOk && config.NODE_ENV === 'production') {
       logger.error('Aborting startup: encrypted config secrets could not be decrypted');
       process.exit(1);
     }
+
     validateStorageConfigOnStartup();
 
     configService.initialize()
@@ -393,11 +401,13 @@ if (process.env.NODE_ENV !== 'test') {
         logger.error('Failed to initialize config service:', error);
       })
       .finally(() => {
-        app.listen(PORT, () => {
+        initSocket(httpServer);
+        server = httpServer.listen(PORT, () => {
           logger.info(`Backend service listening at http://localhost:${PORT}`);
           logger.info(`API Documentation available at http://localhost:${PORT}/api-docs`);
           feeReportScheduler.start();
           uploadExpiryScheduler.start();
+          kycExpiryScheduler.start();
         });
       });
   })().catch((error) => {

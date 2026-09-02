@@ -60,7 +60,8 @@ describe('EventLogViewer decoding', () => {
   it('decodes a full ContractEvent envelope including its contract id', () => {
     const raw = new xdr.ContractEvent({
       ext: new xdr.ExtensionPoint(0),
-      contractId: Buffer.alloc(32, 7),
+      // The SDK declares byte fields as `Opaque[]` (its own "workaround" alias) while producing and consuming Buffers at runtime
+    contractId: Buffer.alloc(32, 7) as any,
       type: xdr.ContractEventType.contract(),
       body: new xdr.ContractEventBody(
         0,
@@ -181,5 +182,349 @@ describe('EventLogViewer log management', () => {
     render(<EventLogViewer />);
 
     expect(screen.getByLabelText('Disconnected')).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// deriveSeverity helper
+// ---------------------------------------------------------------------------
+
+import { deriveSeverity } from './EventLogViewer';
+
+describe('deriveSeverity', () => {
+  it.each([
+    ['error', 'ERROR'],
+    ['transfer_error', 'ERROR'],
+    ['fail', 'ERROR'],
+    ['payment_fail', 'ERROR'],
+    ['fault', 'ERROR'],
+    ['reject', 'ERROR'],
+    ['abort', 'ERROR'],
+  ] as const)('classifies "%s" as ERROR', (topic, expected) => {
+    expect(deriveSeverity(topic)).toBe(expected);
+  });
+
+  it.each([
+    ['warn', 'WARN'],
+    ['balance_warn', 'WARN'],
+    ['caution', 'WARN'],
+    ['deprecation_notice', 'WARN'],
+  ] as const)('classifies "%s" as WARN', (topic, expected) => {
+    expect(deriveSeverity(topic)).toBe(expected);
+  });
+
+  it.each([
+    ['transfer', 'INFO'],
+    ['mint', 'INFO'],
+    ['swap', 'INFO'],
+    ['deposit', 'INFO'],
+    ['unknown', 'INFO'],
+  ] as const)('classifies "%s" as INFO', (topic, expected) => {
+    expect(deriveSeverity(topic)).toBe(expected);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Severity badge rendering
+// ---------------------------------------------------------------------------
+
+describe('EventLogViewer severity badge', () => {
+  it('renders INFO badge for a standard transfer event', () => {
+    render(<EventLogViewer initialEvents={[transferEvent(CONTRACT_A, 'e1')]} />);
+
+    expect(screen.getByLabelText('Severity INFO')).toBeTruthy();
+  });
+
+  it('renders ERROR badge for an error-topic event', () => {
+    const errorEvent: RawContractEvent = {
+      id: 'err1',
+      contractId: CONTRACT_A,
+      timestamp: '2026-01-31T12:00:00.000Z',
+      topics: [b64(xdr.ScVal.scvSymbol('transfer_error')), b64(new Address(ACCOUNT).toScVal())],
+      data: b64(nativeToScVal(0n, { type: 'u128' })),
+    };
+    render(<EventLogViewer initialEvents={[errorEvent]} />);
+
+    expect(screen.getByLabelText('Severity ERROR')).toBeTruthy();
+  });
+
+  it('renders WARN badge for a warn-topic event', () => {
+    const warnEvent: RawContractEvent = {
+      id: 'wrn1',
+      contractId: CONTRACT_A,
+      timestamp: '2026-01-31T12:00:00.000Z',
+      topics: [b64(xdr.ScVal.scvSymbol('balance_warn')), b64(new Address(ACCOUNT).toScVal())],
+      data: b64(nativeToScVal(0n, { type: 'u128' })),
+    };
+    render(<EventLogViewer initialEvents={[warnEvent]} />);
+
+    expect(screen.getByLabelText('Severity WARN')).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Severity dropdown filter
+// ---------------------------------------------------------------------------
+
+describe('EventLogViewer severity filter', () => {
+  const errorEvent: RawContractEvent = {
+    id: 'err1',
+    contractId: CONTRACT_A,
+    timestamp: '2026-01-31T12:00:00.000Z',
+    topics: [b64(xdr.ScVal.scvSymbol('transfer_error')), b64(new Address(ACCOUNT).toScVal())],
+    data: b64(nativeToScVal(0n, { type: 'u128' })),
+  };
+
+  const events = [transferEvent(CONTRACT_A, 't1'), errorEvent];
+
+  it('shows all events when severity is "all"', () => {
+    render(<EventLogViewer initialEvents={events} />);
+
+    expect(screen.getByLabelText('Event transfer')).toBeTruthy();
+    expect(screen.getByLabelText('Event transfer_error')).toBeTruthy();
+  });
+
+  it('shows only ERROR events when ERROR severity is selected', async () => {
+    render(<EventLogViewer initialEvents={events} />);
+
+    fireEvent.change(screen.getByLabelText('Filter by severity'), {
+      target: { value: 'ERROR' },
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByLabelText('Event transfer')).toBeNull(),
+    );
+    expect(screen.getByLabelText('Event transfer_error')).toBeTruthy();
+  });
+
+  it('shows only INFO events when INFO severity is selected', async () => {
+    render(<EventLogViewer initialEvents={events} />);
+
+    fireEvent.change(screen.getByLabelText('Filter by severity'), {
+      target: { value: 'INFO' },
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByLabelText('Event transfer_error')).toBeNull(),
+    );
+    expect(screen.getByLabelText('Event transfer')).toBeTruthy();
+  });
+
+  it('shows empty state message when severity filter yields no results', async () => {
+    render(<EventLogViewer initialEvents={[transferEvent(CONTRACT_A, 't1')]} />);
+
+    fireEvent.change(screen.getByLabelText('Filter by severity'), {
+      target: { value: 'ERROR' },
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByText('No events match the current search and filter criteria.'),
+      ).toBeTruthy(),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Search input
+// ---------------------------------------------------------------------------
+
+describe('EventLogViewer search filtering', () => {
+  const mintEvent: RawContractEvent = {
+    id: 'm1',
+    contractId: CONTRACT_B,
+    timestamp: '2026-01-31T12:00:00.000Z',
+    topics: [b64(xdr.ScVal.scvSymbol('mint')), b64(new Address(ACCOUNT).toScVal())],
+    data: b64(nativeToScVal(42n, { type: 'u128' })),
+  };
+  const events = [transferEvent(CONTRACT_A, 't1'), mintEvent];
+
+  it('renders the search input', () => {
+    render(<EventLogViewer initialEvents={events} />);
+
+    expect(screen.getByLabelText('Search events')).toBeTruthy();
+  });
+
+  it('filters events by topic name after debounce delay', async () => {
+    render(<EventLogViewer initialEvents={events} />);
+
+    fireEvent.change(screen.getByLabelText('Search events'), {
+      target: { value: 'mint' },
+    });
+
+    // Debounce fires at 300ms; waitFor polls until it settles
+    await waitFor(
+      () => expect(screen.queryByLabelText('Event transfer')).toBeNull(),
+      { timeout: 1000 },
+    );
+    expect(screen.getByLabelText('Event mint')).toBeTruthy();
+  });
+
+  it('filters events by contract ID substring', async () => {
+    render(<EventLogViewer initialEvents={events} />);
+
+    // CONTRACT_A slice that is unique to it
+    fireEvent.change(screen.getByLabelText('Search events'), {
+      target: { value: CONTRACT_A.slice(0, 8).toLowerCase() },
+    });
+
+    await waitFor(
+      () => expect(screen.queryByLabelText('Event mint')).toBeNull(),
+      { timeout: 1000 },
+    );
+    expect(screen.getByLabelText('Event transfer')).toBeTruthy();
+  });
+
+  it('shows all events when search is cleared', async () => {
+    render(<EventLogViewer initialEvents={events} />);
+
+    const input = screen.getByLabelText('Search events');
+    fireEvent.change(input, { target: { value: 'mint' } });
+    await waitFor(
+      () => expect(screen.queryByLabelText('Event transfer')).toBeNull(),
+      { timeout: 1000 },
+    );
+
+    fireEvent.change(input, { target: { value: '' } });
+    await waitFor(
+      () => expect(screen.getByLabelText('Event transfer')).toBeTruthy(),
+      { timeout: 1000 },
+    );
+    expect(screen.getByLabelText('Event mint')).toBeTruthy();
+  });
+
+  it('shows empty state with clear-all-filters button when search yields nothing', async () => {
+    render(<EventLogViewer initialEvents={events} />);
+
+    fireEvent.change(screen.getByLabelText('Search events'), {
+      target: { value: 'zzznomatch' },
+    });
+
+    await waitFor(
+      () =>
+        expect(
+          screen.getByText('No events match the current search and filter criteria.'),
+        ).toBeTruthy(),
+      { timeout: 1000 },
+    );
+    expect(screen.getByRole('button', { name: /clear all filters/i })).toBeTruthy();
+  });
+
+  it('clear-all-filters button resets search and shows events', async () => {
+    render(<EventLogViewer initialEvents={events} />);
+
+    fireEvent.change(screen.getByLabelText('Search events'), {
+      target: { value: 'zzznomatch' },
+    });
+    await waitFor(
+      () =>
+        expect(
+          screen.getByText('No events match the current search and filter criteria.'),
+        ).toBeTruthy(),
+      { timeout: 1000 },
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /clear all filters/i }));
+
+    await waitFor(
+      () => expect(screen.getByLabelText('Event transfer')).toBeTruthy(),
+      { timeout: 1000 },
+    );
+    expect(screen.getByLabelText('Event mint')).toBeTruthy();
+    // The search input should be empty
+    expect((screen.getByLabelText('Search events') as HTMLInputElement).value).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Clear search button (X)
+// ---------------------------------------------------------------------------
+
+describe('EventLogViewer clear search button', () => {
+  it('does not render the clear button when search is empty', () => {
+    render(<EventLogViewer initialEvents={[transferEvent(CONTRACT_A, 't1')]} />);
+
+    expect(screen.queryByLabelText('Clear search')).toBeNull();
+  });
+
+  it('renders the clear button when search has a value', () => {
+    render(<EventLogViewer initialEvents={[transferEvent(CONTRACT_A, 't1')]} />);
+
+    fireEvent.change(screen.getByLabelText('Search events'), {
+      target: { value: 'test' },
+    });
+
+    expect(screen.getByLabelText('Clear search')).toBeTruthy();
+  });
+
+  it('clears the search input and restores all events when clicked', async () => {
+    const mintEvent: RawContractEvent = {
+      id: 'm1',
+      contractId: CONTRACT_B,
+      timestamp: '2026-01-31T12:00:00.000Z',
+      topics: [b64(xdr.ScVal.scvSymbol('mint')), b64(new Address(ACCOUNT).toScVal())],
+      data: b64(nativeToScVal(42n, { type: 'u128' })),
+    };
+    render(<EventLogViewer initialEvents={[transferEvent(CONTRACT_A, 't1'), mintEvent]} />);
+
+    fireEvent.change(screen.getByLabelText('Search events'), { target: { value: 'mint' } });
+    await waitFor(() => expect(screen.queryByLabelText('Event transfer')).toBeNull(), {
+      timeout: 1000,
+    });
+
+    fireEvent.click(screen.getByLabelText('Clear search'));
+
+    await waitFor(() => expect(screen.getByLabelText('Event transfer')).toBeTruthy(), {
+      timeout: 1000,
+    });
+    expect((screen.getByLabelText('Search events') as HTMLInputElement).value).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Combined contract + severity + search filters
+// ---------------------------------------------------------------------------
+
+describe('EventLogViewer combined filters', () => {
+  const mintOnB: RawContractEvent = {
+    id: 'm1',
+    contractId: CONTRACT_B,
+    timestamp: '2026-01-31T12:00:00.000Z',
+    topics: [b64(xdr.ScVal.scvSymbol('mint')), b64(new Address(ACCOUNT).toScVal())],
+    data: b64(nativeToScVal(42n, { type: 'u128' })),
+  };
+  const errorOnA: RawContractEvent = {
+    id: 'err1',
+    contractId: CONTRACT_A,
+    timestamp: '2026-01-31T12:00:00.000Z',
+    topics: [b64(xdr.ScVal.scvSymbol('transfer_error')), b64(new Address(ACCOUNT).toScVal())],
+    data: b64(nativeToScVal(0n, { type: 'u128' })),
+  };
+
+  it('combining contract filter + search narrows results correctly', async () => {
+    render(
+      <EventLogViewer
+        initialEvents={[transferEvent(CONTRACT_A, 't1'), mintOnB, errorOnA]}
+      />,
+    );
+
+    // Restrict to CONTRACT_A
+    fireEvent.change(screen.getByLabelText('Filter by contract ID'), {
+      target: { value: CONTRACT_A },
+    });
+    // Then search for 'error'
+    fireEvent.change(screen.getByLabelText('Search events'), {
+      target: { value: 'error' },
+    });
+
+    await waitFor(
+      () => expect(screen.queryByLabelText('Event transfer')).toBeNull(),
+      { timeout: 1000 },
+    );
+    await waitFor(
+      () => expect(screen.queryByLabelText('Event mint')).toBeNull(),
+      { timeout: 1000 },
+    );
+    expect(screen.getByLabelText('Event transfer_error')).toBeTruthy();
   });
 });

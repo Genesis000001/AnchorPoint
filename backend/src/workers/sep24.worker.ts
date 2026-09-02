@@ -19,14 +19,26 @@ export class Sep24Worker {
         claimableBalanceId,
       });
 
-      // Update database transaction status to PENDING_EXTERNAL if it exists
+      // Update database transaction status to PENDING_EXTERNAL with
+      // optimistic concurrency guard: the WHERE clause includes the current
+      // status so the update only succeeds if no concurrent writer has changed
+      // it since we last read it. A count of 0 means someone else already
+      // moved the transaction — which is fine, not an error.
       try {
-        await prisma.transaction.update({
-          where: { id: transactionId },
+        const { count } = await prisma.transaction.updateMany({
+          where: {
+            id: transactionId,
+            status: { notIn: ['PENDING_EXTERNAL', 'COMPLETED', 'ERROR'] },
+          },
           data: {
             status: 'PENDING_EXTERNAL',
           },
         });
+        if (count === 0) {
+          logger.info('SEP-24 transaction already at terminal or target status, skipping', {
+            transactionId,
+          });
+        }
       } catch (dbErr) {
         logger.warn('Database transaction update skipped or failed in worker', {
           transactionId,
