@@ -1,0 +1,37 @@
+# contracts/mutants.toml
+# Configuration for cargo-mutants mutation testing (https://mutants.rs/)
+# for the contracts workspace.
+#
+# The contracts workspace is separate from the root workspace, so it needs
+# its own config. Run from the contracts/ directory:
+#
+#   cd contracts && cargo mutants --config mutants.toml -p liquid_staking
+#
+# The same command is run in CI (see .github/workflows/rust.yml).
+
+# Only mutate the liquid staking contract as requested.
+examine_globs = ["liquid_staking/**"]
+
+# Skip test and example files.
+exclude_globs = ["**/tests/**", "**/examples/**"]
+
+# Standard timeout floor for Soroban contract tests, in seconds.
+minimum_test_timeout = 300
+
+# Turn off rustc lints while building mutants so denied warnings don't make
+# mutants unviable.
+cap_lints = true
+
+# Mutants excluded as behaviorally equivalent in every reachable state:
+# - `reward > 0` / `fee_penalty > 0` / `earned > 0` guards changed to `>= 0`.
+#   With a zero amount the Stellar Asset Contract transfer is a no-op (it only
+#   checks non-negativity), and `_update_reward` stores the same value it
+#   already had, so the mutated code produces identical observable state.
+# - `let neg = n < 0` changed to `n <= 0` in i128_to_string: the two only
+#   differ when n == 0, but that value returns early before this line.
+exclude_re = [
+  "replace > with >= in LiquidStaking::unstake",
+  "replace > with >= in LiquidStaking::emergency_withdraw",
+  "replace > with >= in LiquidStaking::_update_reward",
+  "replace < with <= in i128_to_string",
+]

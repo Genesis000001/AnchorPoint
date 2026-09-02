@@ -5,6 +5,20 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, symbol_short, Address, Env, IntoVal, String,
 };
 
+/// Maximum number of token transfers allowed in a single batch operation.
+const MAX_BATCH_SIZE: u32 = 100;
+
+/// Contract-level errors returned by batch operations.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum ContractError {
+    /// `token_ids` and `amounts` vectors have different lengths.
+    VectorLengthMismatch = 1,
+    /// The batch exceeds the maximum allowed size (100 transfers).
+    BatchTooLarge = 2,
+}
+
 #[contracttype]
 pub enum DataKey {
     Admin,
@@ -90,9 +104,18 @@ impl TokenContract {
         to: Address,
         token_ids: soroban_sdk::Vec<u64>,
         amounts: soroban_sdk::Vec<i128>,
-    ) {
+    ) -> Result<(), ContractError> {
         from.require_auth();
-        assert!(token_ids.len() == amounts.len(), "length mismatch");
+
+        // Validate that both vectors have the same length.
+        if token_ids.len() != amounts.len() {
+            return Err(ContractError::VectorLengthMismatch);
+        }
+
+        // Enforce max batch size to prevent resource exhaustion.
+        if token_ids.len() > MAX_BATCH_SIZE {
+            return Err(ContractError::BatchTooLarge);
+        }
 
         for i in 0..token_ids.len() {
             let token_id = token_ids.get(i).unwrap();
@@ -103,6 +126,8 @@ impl TokenContract {
         // Topic: event name only; from + to + token_ids in data.
         env.events()
             .publish((symbol_short!("batch_xf"),), (from, to, token_ids));
+
+        Ok(())
     }
 
     /// Approve `spender` to move up to `amount` of `token_id` on behalf of
@@ -599,6 +624,9 @@ mod tests {
         let bob = Address::generate(&env);
 
         client.mint(&alice, &1, &1000);
+        // Not approved before the operator approval is set
+        assert!(!client.is_approved_for_all(&alice, &operator));
+        assert!(!client.is_approved_for_all(&operator, &alice));
         client.set_approval_for_all(&alice, &operator, &true);
 
         assert!(client.is_approved_for_all(&alice, &operator));
@@ -711,14 +739,63 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "length mismatch")]
+    #[should_panic]
     fn test_batch_transfer_length_mismatch() {
         let (env, client, _) = setup();
         let alice = Address::generate(&env);
         let bob = Address::generate(&env);
         let ids = soroban_sdk::Vec::from_array(&env, [1, 2]);
-        let amounts = soroban_sdk::Vec::from_array(&env, [100]);
+        let amounts = soroban_sdk::Vec::from_array(&env, [100i128]);
         client.batch_transfer(&alice, &bob, &ids, &amounts);
+    }
+
+    #[test]
+    fn test_batch_transfer_returns_error_on_length_mismatch() {
+        let (env, client, _) = setup();
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+        let ids = soroban_sdk::Vec::from_array(&env, [1u64, 2u64]);
+        let amounts = soroban_sdk::Vec::from_array(&env, [100i128]);
+        // try_batch_transfer returns the Result directly without panicking
+        let result = client.try_batch_transfer(&alice, &bob, &ids, &amounts);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_batch_transfer_max_size_enforced() {
+        let (env, client, _) = setup();
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+
+        // Build a batch with exactly MAX_BATCH_SIZE (100) entries — should succeed
+        let mut ids = soroban_sdk::Vec::new(&env);
+        let mut amounts = soroban_sdk::Vec::new(&env);
+        for i in 1u64..=100 {
+            client.mint(&alice, &i, &1000);
+            ids.push_back(i);
+            amounts.push_back(1i128);
+        }
+        client.batch_transfer(&alice, &bob, &ids, &amounts);
+        assert_eq!(client.balance_of(&bob, &1), 1);
+        assert_eq!(client.balance_of(&bob, &100), 1);
+    }
+
+    #[test]
+    fn test_batch_transfer_exceeds_max_size_returns_error() {
+        let (env, client, _) = setup();
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+
+        // Build a batch with 101 entries — should fail with BatchTooLarge
+        let mut ids = soroban_sdk::Vec::new(&env);
+        let mut amounts = soroban_sdk::Vec::new(&env);
+        for i in 1u64..=101 {
+            client.mint(&alice, &i, &1000);
+            ids.push_back(i);
+            amounts.push_back(1i128);
+        }
+        let result = client.try_batch_transfer(&alice, &bob, &ids, &amounts);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -1153,6 +1230,60 @@ mod invariants {
             supply_after, balance_sum,
             "INVARIANT VIOLATION: Balance sum doesn't match supply after transfers"
         );
+    }
+
+    // ============================================================================
+    // Balance history (get_past_balance / checkpoints)
+    // ============================================================================
+
+    #[test]
+    fn test_get_past_balance_no_transfer_history() {
+        let (env, client, _) = setup();
+        let alice = Address::generate(&env);
+        let stranger = Address::generate(&env);
+        let token_id = 1u64;
+
+        client.mint(&alice, &token_id, &1000);
+
+        // No checkpoints exist yet (last ledger defaults to 0), so the query
+        // falls back to the current balance.
+        assert_eq!(client.get_past_balance(&alice, &token_id, &50), 1000);
+        // A user with no balance at all returns 0.
+        assert_eq!(client.get_past_balance(&stranger, &token_id, &50), 0);
+    }
+
+    #[test]
+    fn test_get_past_balance_snapshots() {
+        let (env, client, _) = setup();
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+        let token_id = 1u64;
+
+        client.mint(&alice, &token_id, &1000);
+
+        // First transfer at ledger 100 checkpoints alice's pre-transfer balance
+        // (1000) at ledger 0; her balance becomes 700.
+        env.ledger().set_sequence_number(100);
+        client.transfer(&alice, &bob, &token_id, &300);
+
+        // Second transfer at ledger 200 checkpoints alice's pre-transfer balance
+        // (700) at ledger 100; her balance becomes 500. Bob's pre-transfer
+        // balance (0) is checkpointed at ledger 0.
+        env.ledger().set_sequence_number(200);
+        client.transfer(&alice, &bob, &token_id, &200);
+
+        // Ledger at/after the last checkpoint -> current balance
+        assert_eq!(client.get_past_balance(&alice, &token_id, &200), 500);
+        assert_eq!(client.get_past_balance(&alice, &token_id, &500), 500);
+
+        // Ledger before the last checkpoint -> snapshot recorded at that ledger
+        assert_eq!(client.get_past_balance(&alice, &token_id, &100), 700);
+        assert_eq!(client.get_past_balance(&alice, &token_id, &0), 1000);
+
+        // Bob's pre-transfer balance (300) was checkpointed at ledger 100
+        assert_eq!(client.get_past_balance(&bob, &token_id, &100), 300);
+        // Ledger before any snapshot -> 0
+        assert_eq!(client.get_past_balance(&bob, &token_id, &50), 0);
     }
 
     /// ============================================================================

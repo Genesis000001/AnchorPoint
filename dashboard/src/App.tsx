@@ -28,7 +28,7 @@ import { WalletModal } from './components/WalletModal';
 import { NetworkSelector, NetworkBanner } from './components/NetworkSelector';
 import { NetworkProvider } from './contexts/NetworkContext';
 import { SessionTimeoutModal } from './components/Auth/SessionTimeoutModal';
-import { FreighterAdapter } from './lib/wallet/FreighterAdapter';
+import { WalletManager } from './lib/wallet';
 import { I18nProvider, useTranslation } from './i18n/config';
 import { ThemeProvider, useTheme } from './contexts/ThemeContext';
 
@@ -143,8 +143,25 @@ const TabFallback = () => (
 );
 
 const App = () => {
+  const { resolvedTheme } = useTheme();
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.remove('light', 'dark');
+    root.classList.add(resolvedTheme);
+  }, [resolvedTheme]);
+
+  return (
+    <I18nProvider>
+      <AppShell />
+    </I18nProvider>
+  );
+};
+
+const AppShell = () => {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [isDesktop, setIsDesktop] = useState(false);
   const [uiConfig, setUiConfig] = useState<UiConfig>(defaultUiConfig);
   const [loadingState, setLoadingState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [wallet, setWallet] = useState<{ publicKey: string; network: string } | null>(null);
@@ -152,7 +169,8 @@ const App = () => {
   const [walletError, setWalletError] = useState('');
   const [walletModalOpen, setWalletModalOpen] = useState(false);
   const [walletSessionResetCounter, setWalletSessionResetCounter] = useState(0);
-  const walletAdapter = useMemo(() => new FreighterAdapter(), []);
+  const [selectedWalletId, setSelectedWalletId] = useState<string | null>(null);
+  const walletManager = useMemo(() => WalletManager.getInstance(), []);
   const { t, language, changeLanguage } = useTranslation();
 
   const clearClientSessionState = useCallback(() => {
@@ -174,9 +192,9 @@ const App = () => {
   }, []);
 
   const handleWalletDisconnect = useCallback(async (skipAdapterDisconnect = false) => {
-    if (!skipAdapterDisconnect) {
+    if (!skipAdapterDisconnect && selectedWalletId) {
       try {
-        await walletAdapter.disconnect();
+        await walletManager.disconnectWallet(selectedWalletId);
       } catch (error) {
         console.warn('Wallet disconnect cleanup failed:', error);
       }
@@ -186,9 +204,10 @@ const App = () => {
     setWallet(null);
     setWalletStatus('idle');
     setWalletError('');
+    setSelectedWalletId(null);
     setActiveTab('dashboard');
     setWalletSessionResetCounter((previous) => previous + 1);
-  }, [clearClientSessionState, walletAdapter]);
+  }, [clearClientSessionState, walletManager, selectedWalletId]);
 
   useEffect(() => {
     let ignore = false;
@@ -224,25 +243,51 @@ const App = () => {
 
   useEffect(() => {
     const handleExternalDisconnect = () => {
-      void handleWalletDisconnect(true);
+      if (selectedWalletId === 'freighter') {
+        void handleWalletDisconnect(true);
+      }
     };
 
     window.addEventListener('freighter:disconnect', handleExternalDisconnect);
     return () => {
       window.removeEventListener('freighter:disconnect', handleExternalDisconnect);
     };
-  }, [handleWalletDisconnect]);
+  }, [handleWalletDisconnect, selectedWalletId]);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia('(min-width: 768px)');
-    const handleMediaChange = (event: MediaQueryListEvent) => setSidebarOpen(event.matches);
+    const handleMediaChange = (event: MediaQueryListEvent) => {
+      setIsDesktop(event.matches);
+      setSidebarOpen(event.matches);
+    };
 
+    setIsDesktop(mediaQuery.matches);
     setSidebarOpen(mediaQuery.matches);
     mediaQuery.addEventListener('change', handleMediaChange);
 
     return () => {
       mediaQuery.removeEventListener('change', handleMediaChange);
     };
+  }, []);
+
+  // Lock body scroll while the mobile drawer is open so the drawer is the only
+  // scrollable surface. Desktop keeps the sidebar docked, so it never locks.
+  useEffect(() => {
+    if (isDesktop || !sidebarOpen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [isDesktop, sidebarOpen]);
+
+  useEffect(() => {
+    // Load saved wallet preference
+    const savedWalletId = localStorage.getItem('preferredWalletId');
+    if (savedWalletId) {
+      setSelectedWalletId(savedWalletId);
+    }
   }, []);
 
   const menuItems = useMemo(
@@ -261,30 +306,27 @@ const App = () => {
     [t],
   );
 
-  const handleConnectWallet = async () => {
+  const handleConnectWallet = async (walletId: string) => {
     setWalletStatus('connecting');
     setWalletError('');
 
     try {
-      const connectedWallet = await walletAdapter.connect();
+      const connectedWallet = await walletManager.connectWallet(walletId);
       setWallet(connectedWallet);
+      setSelectedWalletId(walletId);
       setWalletStatus('idle');
+      
+      // Save wallet preference to localStorage
+      localStorage.setItem('preferredWalletId', walletId);
     } catch (error) {
       setWalletStatus('error');
       setWalletError(error instanceof Error ? error.message : 'Unable to connect wallet.');
     }
   };
 
-  const handleWalletOptionSelect = async (walletId: 'freighter' | 'albedo' | 'rango') => {
+  const handleWalletOptionSelect = async (walletId: string) => {
     setWalletModalOpen(false);
-
-    if (walletId !== 'freighter') {
-      setWalletStatus('error');
-      setWalletError(`${walletId.charAt(0).toUpperCase()}${walletId.slice(1)} support will be available soon.`);
-      return;
-    }
-
-    await handleConnectWallet();
+    await handleConnectWallet(walletId);
   };
 
   return (
@@ -316,7 +358,7 @@ const App = () => {
         onSelect={handleWalletOptionSelect}
       >
         <div className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-950/80 px-3 py-2 text-xs text-slate-400">
-          <span>Freighter connection is available now.</span>
+          <span>Multiple wallet options available</span>
           <span>{walletStatus === 'connecting' ? 'Connecting…' : 'Select a provider to continue'}</span>
         </div>
       </WalletModal>
@@ -329,7 +371,7 @@ const App = () => {
             aria-label={sidebarOpen ? 'Close navigation menu' : 'Open navigation menu'}
             aria-expanded={sidebarOpen}
             aria-controls="main-sidebar"
-            className="rounded p-2 -ml-2 lg:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+            className="relative z-20 -ml-2 rounded bg-background p-2 md:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
             onClick={() => setSidebarOpen(!sidebarOpen)}
           >
             {sidebarOpen ? <X aria-hidden="true" /> : <Menu aria-hidden="true" />}
@@ -392,15 +434,17 @@ const App = () => {
               <select
                 aria-label={t('language.label')}
                 value={language}
-                onChange={(event) => changeLanguage(event.target.value as 'en' | 'es' | 'pt')}
+                onChange={(event) => changeLanguage(event.target.value as 'en' | 'es' | 'pt' | 'fr')}
                 className="rounded-lg border border-slate-700 bg-slate-900 px-2 py-2 text-sm text-slate-200"
               >
                 <option value="en">{t('language.en')}</option>
                 <option value="es">{t('language.es')}</option>
                 <option value="pt">{t('language.pt')}</option>
+                <option value="fr">{t('language.fr')}</option>
               </select>
               <NetworkSelector />
               <UserAvatarDropdown
+                walletAddress={wallet?.publicKey}
                 onSettings={() => setActiveTab('settings')}
                 onNotifications={() => setActiveTab('notifications')}
                 onSignOut={() => {
@@ -462,8 +506,8 @@ const App = () => {
                 {activeTab === 'dashboard' && (
                   <DashboardOverview uiConfig={uiConfig} isLoading={loadingState === 'loading'} />
                 )}
-                {activeTab === 'deposit' && <SEP24Flow type="deposit" uiConfig={uiConfig} />}
-                {activeTab === 'withdraw' && <SEP24Flow type="withdraw" uiConfig={uiConfig} />}
+                {activeTab === 'deposit' && <SEP24Flow type="deposit" uiConfig={uiConfig} apiBaseUrl={apiBaseUrl} />}
+                {activeTab === 'withdraw' && <SEP24Flow type="withdraw" uiConfig={uiConfig} apiBaseUrl={apiBaseUrl} />}
                 {activeTab === 'history' && <TransactionHistory />}
                 {activeTab === 'sep38' && <Sep38QuotePanel />}
                 {activeTab === 'status' && <ServiceStatusPanel />}
@@ -523,7 +567,9 @@ const ThemeToggle = () => {
 const AppRoot = () => (
   <ThemeProvider>
     <I18nProvider>
-      <App />
+      <NetworkProvider apiBaseUrl={apiBaseUrl}>
+        <App />
+      </NetworkProvider>
     </I18nProvider>
   </ThemeProvider>
 );

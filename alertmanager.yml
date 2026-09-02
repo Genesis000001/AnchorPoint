@@ -1,0 +1,9 @@
+route:
+  receiver: team-backend
+receivers:
+  - name: team-backend
+    pagerduty_configs:
+      - service_key: '<PAGERTUT_SERVICE_KEY>'
+    slack_configs:
+      - api_url: '<SLACK_WEBHOOK_URL>'
+        channel: '#alerts'

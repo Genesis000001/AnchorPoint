@@ -1,62 +1,56 @@
-# -----------------------------------------------------------------------------
-# Stage 1: Shared base image
-# -----------------------------------------------------------------------------
-FROM node:20-alpine AS base
+# =============================================================================
+# Stage 1: builder — installs ALL dependencies and compiles TypeScript
+# =============================================================================
+FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# -----------------------------------------------------------------------------
-# Stage 2: Install dependencies once (cached by package lock changes)
-# -----------------------------------------------------------------------------
-FROM base AS deps
+# Copy dependency manifests first to maximise layer-cache reuse.
+# These layers are only invalidated when package*.json files change.
+COPY package.json package-lock.json ./
 
-ENV NODE_ENV=development
+# Install all dependencies including devDependencies needed for the build step.
+RUN npm ci --ignore-scripts
 
-# Copy only dependency manifests first to maximize Docker cache reuse
-COPY package.json ./
-COPY package-lock.json ./
-RUN npm ci
-
-# -----------------------------------------------------------------------------
-# Stage 3: Build application and prune dev dependencies
-# -----------------------------------------------------------------------------
-FROM deps AS build
-
-# Copy application source after dependency installation to preserve cache layers
+# Copy application source after dependencies to keep the install layer cached.
 COPY . .
 
-# Build TypeScript output and generate Prisma client artifacts.
-# Afterwards prune dev dependencies to keep runtime image smaller.
-RUN npm run build \
-  && npx prisma generate \
-  && npm prune --omit=dev \
-  && npm cache clean --force
+# Compile TypeScript → dist/ and generate Prisma client artefacts.
+RUN npm run build && npx prisma generate
 
-# -----------------------------------------------------------------------------
-# Stage 4: Runtime image (small, secure, production-only)
-# -----------------------------------------------------------------------------
-FROM base AS runtime
+# Prune down to production-only node_modules in place so we can copy them
+# cleanly to the runtime stage. Clearing the npm cache shrinks this layer.
+RUN npm prune --omit=dev && npm cache clean --force
+
+# =============================================================================
+# Stage 2: runner — minimal production image with no build toolchain
+# =============================================================================
+FROM node:20-alpine AS runner
+
+# Runtime utilities:
+#   dumb-init  — proper PID-1 signal handling and zombie-process reaping
+#   wget       — lightweight health-check probe (no curl needed)
+RUN apk add --no-cache dumb-init wget
+
+WORKDIR /app
 
 ENV NODE_ENV=production
 
-# Runtime utilities:
-# - dumb-init for proper signal handling and zombie reaping
-# - wget for container health checks
-RUN apk add --no-cache dumb-init wget
+# Copy only the artefacts needed at runtime from the builder stage.
+# Nothing from the build toolchain (TypeScript compiler, devDependencies, etc.)
+# ever enters this image.
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/node_modules  ./node_modules
+COPY --from=builder /app/dist          ./dist
+COPY --from=builder /app/prisma        ./prisma
 
-# Copy only runtime assets from build stage
-COPY --from=build /app/package*.json ./
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/dist ./dist
-COPY --from=build /app/prisma ./prisma
-
-# Use non-root user provided by official Node image
+# Run as the unprivileged 'node' user supplied by the official Node image.
 USER node
 
-# Expose backend port
+# Backend API port
 EXPOSE 3002
 
-# Health check endpoint used by orchestrators and compose
+# Orchestrator health-check (docker-compose, k8s liveness probe, etc.)
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:3002/health || exit 1
 

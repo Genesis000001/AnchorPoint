@@ -1,0 +1,23 @@
+apiVersion: v2
+name: anchor-point
+description: >
+  Helm chart for the AnchorPoint backend — a Stellar SEP-compliant anchor
+  service that handles SEP-6, SEP-10, SEP-24, SEP-31, and SEP-38 protocols
+  with BullMQ workers, PostgreSQL, and Redis.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - anchorpoint
+  - stellar
+  - anchor
+  - soroban
+  - sep
+home: https://github.com/ceejaylaboratory/AnchorPoint
+sources:
+  - https://github.com/ceejaylaboratory/AnchorPoint
+maintainers:
+  - name: CeejayLaboratory
+    url: https://github.com/ceejaylaboratory
+annotations:
+  category: Backend

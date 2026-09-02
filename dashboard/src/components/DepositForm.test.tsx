@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { FieldRequirement } from '../types';
+import { I18nProvider } from '../i18n/config';
 import {
   DEFAULT_ASSET_LIMITS,
   DepositForm,
@@ -139,7 +140,11 @@ describe('buildDepositSchema', () => {
 describe('<DepositForm />', () => {
   const setup = (assetCode = 'USDC') => {
     const onSubmit = vi.fn();
-    render(<DepositForm fields={FIELDS} assetCode={assetCode} onSubmit={onSubmit} />);
+    render(
+      <I18nProvider>
+        <DepositForm fields={FIELDS} assetCode={assetCode} onSubmit={onSubmit} />
+      </I18nProvider>,
+    );
     return { onSubmit };
   };
 
