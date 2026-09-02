@@ -45,6 +45,8 @@ import { validateStorageConfigOnStartup } from './services/storage-provider.serv
 import { uploadExpiryScheduler } from './workers/upload-expiry.scheduler';
 import { initSocket } from './lib/socket';
 import { kycExpiryScheduler } from './workers/kyc-expiry.scheduler';
+import { feeReportWorker } from './workers/fee-report.worker';
+import contractQueueService from './services/contract-queue.service';
 import { checkMigrationsOnStartup } from './services/migration-check.service';
 
 let server: ReturnType<typeof app.listen> | null = null;
@@ -59,6 +61,18 @@ function gracefulShutdown(signal: string): void {
   if (uploadExpiryScheduler) {
     uploadExpiryScheduler.stop();
   }
+
+  if (kycExpiryScheduler) {
+    kycExpiryScheduler.stop();
+  }
+
+  feeReportWorker.close().catch((err) => {
+    logger.error('Error closing fee report worker:', err);
+  });
+
+  contractQueueService.close().catch((err) => {
+    logger.error('Error closing contract queue service:', err);
+  });
 
   if (server) {
     server.close(() => {
