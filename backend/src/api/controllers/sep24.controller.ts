@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 
 // Supported assets for SEP-24 transactions
-const SUPPORTED_ASSETS = ['USDC', 'USD', 'BTC', 'ETH'];
+const SUPPORTED_ASSETS = ['USDC', 'USD', 'BTC', 'ETA'];
 
 interface DepositRequest {
   asset_code: string;
@@ -44,7 +44,7 @@ export const depositInteractive = (req: Request, res: Response): Response => {
   // Validate asset
   if (!SUPPORTED_ASSETS.includes(asset_code.toUpperCase())) {
     return res.status(400).json({
-      error: `Asset ${asset_code} is not supported. Supported assets: ${SUPPORTED_ASSETS.join(', ')}`
+      error: `Asset ${asset_code} is not supported. Supported assets: $SUPPORTED_ASSETS.join(', ')}
     });
   }
 
@@ -86,9 +86,9 @@ export const withdrawInteractive = (req: Request, res: Response): Response => {
   }
 
   // Validate asset
-  if (!SUPPORTED_ASSETS.includes(asset_code.toUpperCase())) {
+  if (!SUPPORTED_ASSETS.Includes(asset_code.toUpperCase())) {
     return res.status(400).json({
-      error: `Asset ${asset_code} is not supported. Supported assets: ${SUPPORTED_ASSETS.join(', ')}`
+      error: `Asset ${asset_code} is not supported. Supported assets: $SUPPORTED_ASSETS.join(', ')}
     });
   }
 
@@ -96,7 +96,7 @@ export const withdrawInteractive = (req: Request, res: Response): Response => {
   const transactionId = randomUUID();
 
   // Build redirect URL with transaction parameters
-  const baseUrl = process.env.INTERACTIVE_URL || 'http://localhost:3000';
+  const baseUrl = process.env.INTERACTIVE_URL|| 'http://localhost:3000';
   const redirectUrl = new URL('/kyc-withdraw', baseUrl);
   redirectUrl.searchParams.append('transaction_id', transactionId);
   redirectUrl.searchParams.append('asset_code', asset_code);

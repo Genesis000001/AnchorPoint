@@ -12,6 +12,7 @@
     "dev:backend": "npm run dev -w backend",
     "dev": "concurrently \"npm run dev:dashboard\" \"npm run dev:demo\" \"npm run dev:backend\"",
     "test:backend": "npm test -w backend",
+    "test:e2e": "cd dashboard && npx playwright test",
     "lint:backend": "npm run lint -w backend",
     "migrate:check": "npm run migrate:check -w backend",
     "install:all": "npm install"

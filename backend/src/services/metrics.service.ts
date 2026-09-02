@@ -11,6 +11,9 @@ export class MetricsService {
   private apiVersionGauge: Gauge<string>;
   private sep38QuoteRequests: Counter<string>;
   private sep38QuoteDuration: Histogram<string>;
+  private sepTransactionsTotal: Counter<string>;
+  private sepTransactionDuration: Histogram<string>;
+  private kycVerificationTotal: Counter<string>;
 
   constructor() {
     this.registry = new promClient.Registry();
@@ -45,7 +48,7 @@ export class MetricsService {
       name: 'http_request_duration_seconds',
       help: 'Duration of HTTP requests in seconds',
       labelNames: ['method', 'path'] as const,
-      buckets: [0.01, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10], // Response time buckets
+      buckets: [0.01, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10],
       registers: [this.registry],
     });
 
@@ -81,7 +84,6 @@ export class MetricsService {
       registers: [this.registry],
     });
 
-    // Set API version (assuming from package.json)
     this.apiVersionGauge.set({ version: '1.0.0' }, 1);
 
     // SEP-38 quote request counter
@@ -100,6 +102,50 @@ export class MetricsService {
       buckets: [0.01, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10],
       registers: [this.registry],
     });
+
+    // SEP Transaction Volume & Latency Metrics (Issue #917)
+    this.sepTransactionsTotal = new promClient.Counter({
+      name: 'anchor_sep_transactions_total',
+      help: 'Total number of SEP protocol transactions by SEP type, asset, and status',
+      labelNames: ['sep', 'asset_code', 'status'] as const,
+      registers: [this.registry],
+    });
+
+    this.sepTransactionDuration = new promClient.Histogram({
+      name: 'anchor_sep_transaction_duration_seconds',
+      help: 'Duration of SEP transaction processing in seconds',
+      labelNames: ['sep', 'operation'] as const,
+      buckets: [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30],
+      registers: [this.registry],
+    });
+
+    this.kycVerificationTotal = new promClient.Counter({
+      name: 'anchor_kyc_verification_total',
+      help: 'Total number of KYC verifications processed',
+      labelNames: ['status', 'provider'] as const,
+      registers: [this.registry],
+    });
+  }
+
+  /**
+   * Record SEP transaction event
+   */
+  incrementSepTransaction(sep: string, assetCode: string, status: string): void {
+    this.sepTransactionsTotal.inc({ sep, asset_code: assetCode, status });
+  }
+
+  /**
+   * Observe SEP transaction duration
+   */
+  observeSepTransactionDuration(sep: string, operation: string, durationSeconds: number): void {
+    this.sepTransactionDuration.observe({ sep, operation }, durationSeconds);
+  }
+
+  /**
+   * Record KYC verification result
+   */
+  incrementKycVerification(status: string, provider: string = 'internal'): void {
+    this.kycVerificationTotal.inc({ status, provider });
   }
 
   /**
@@ -156,7 +202,7 @@ export class MetricsService {
   }
 
   /**
-   * Observe SEP-38 quote request duration
+   * Observe SEP-38 quote duration
    */
   observeSep38QuoteDuration(status: string, durationSeconds: number): void {
     this.sep38QuoteDuration.observe({ status }, durationSeconds);

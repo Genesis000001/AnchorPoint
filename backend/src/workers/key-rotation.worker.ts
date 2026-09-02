@@ -1,9 +1,11 @@
-import cron from 'node-cron';
+import cron, { ScheduledTask } from 'node-cron';
 import logger from '../utils/logger';
 import { config } from '../config/env';
 import { KeyRotationService } from '../services/key-rotation.service';
 
 const service = new KeyRotationService();
+
+let scheduledTask: ScheduledTask | null = null;
 
 function startWorker(): void {
   if (config.ENABLE_KEY_ROTATION_WORKER !== 'true') {
@@ -21,7 +23,7 @@ function startWorker(): void {
         return '0 0 1 * *';
       })();
 
-  cron.schedule(validSchedule, () => {
+  scheduledTask = cron.schedule(validSchedule, () => {
     service
       .rotateKeys()
       .then((result) => {
@@ -41,8 +43,22 @@ function startWorker(): void {
   logger.info(`   Backend: ${config.KEY_MANAGEMENT_BACKEND}`);
 }
 
-if (require.main === module) {
-  startWorker();
+function stopWorker(): void {
+  if (scheduledTask) {
+    scheduledTask.stop();
+    scheduledTask = null;
+    logger.info('Key rotation worker stopped');
+  }
 }
 
-export { startWorker };
+if (require.main === module) {
+  startWorker();
+  const shutdown = () => {
+    stopWorker();
+    process.exit(0);
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+}
+
+export { startWorker, stopWorker };
