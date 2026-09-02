@@ -208,6 +208,49 @@ cargo test               # Run all contract tests
    ```
 3. Open http://localhost:5173 in your browser.
 
+### Mutation Testing
+
+Mutation testing (via [`cargo-mutants`](https://mutants.rs/)) measures how well the
+contract test suites detect injected bugs ("mutants"). Every mutant that is not
+caught by a failing test is a gap in the test coverage. The CI pipeline runs the
+mutation suite for the core token, staking, and liquid staking contracts; a PR
+must not leave any *missed* mutants.
+
+**Install the tool:**
+
+```bash
+cargo install cargo-mutants --locked
+```
+
+**Run locally** — the repository has two Cargo workspaces, each with its own
+`mutants.toml` config (cargo-mutants only auto-discovers `.cargo/mutants.toml`,
+so the config is passed explicitly with `--config`):
+
+```bash
+# Root workspace: SEP-41 token + staking contracts
+cargo mutants --config mutants.toml -p sep41-token -p staking -j 2
+
+# Contracts workspace: liquid staking (--in-place is required because the
+# contracts workspace references a crate outside of it via a path dependency)
+cd contracts && cargo mutants --config mutants.toml -p liquid_staking --in-place
+```
+
+A successful run ends with `0 missed` and exit code 0.
+
+**Guidelines for improving the mutation score:**
+
+- When a mutant is *missed*, add a focused edge-case test that exercises the
+  mutated behavior, e.g. zero amounts, negative inputs, boundary timestamps,
+  or the absence of an emitted event. See the `get_past_balance` balance-history
+tests in `src/token/lib.rs` or the string-helper tests in
+`contracts/liquid_staking/src/lib.rs` for examples.
+- Some mutants are *behaviorally equivalent* to the original code (e.g. a guard
+  changed from `> 0` to `>= 0` where a zero-value token transfer is a no-op).
+  These cannot be killed by any test; document them in the `exclude_re` list of
+the relevant `mutants.toml` with an explanation, and keep the file's comment
+up to date so the exclusion stays justified.
+- `unviable` mutants (that fail to compile) are expected and do not fail the run.
+
 ## Pull Request Guidelines
 
 - Keep PRs focused — one feature or fix per PR.

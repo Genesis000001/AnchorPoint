@@ -46,3 +46,29 @@ jobs:
         run: ./scripts/security-audit.sh --warn-only
       - name: Test
         run: cargo test -p anchorpoint-utils -p anchorpoint-security-registry -p event-hub --all-features
+
+  mutation-testing:
+    name: Mutation testing (cargo-mutants)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config gcc
+
+      - name: Mutation test token and staking contracts
+        run: cargo mutants --config mutants.toml -p sep41-token -p staking -j 2
+
+      - name: Mutation test liquid staking contract
+        working-directory: contracts
+        run: cargo mutants --config mutants.toml -p liquid_staking --in-place
