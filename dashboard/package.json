@@ -15,7 +15,10 @@
     "test:e2e": "cypress run"
   },
   "dependencies": {
+    "@albedo-link/intent": "^0.13.0",
+    "@creit.tech/stellar-wallets-kit": "^2.5.0",
     "@hookform/resolvers": "^5.5.7",
+    "@stellar/freighter-api": "^6.0.1",
     "@stellar/stellar-sdk": "^16.2.0",
     "axios": "^1.13.6",
     "clsx": "^2.1.1",
