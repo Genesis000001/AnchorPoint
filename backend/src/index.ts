@@ -103,14 +103,14 @@ app.use(securityHeadersMiddleware);
 app.use(tracingMiddleware);
 const PORT = config.PORT;
 
-const configuredOrigins = process.env.PRODUCTION_CORS_ORIGINS ?? '';
+const configuredOrigins = process.env.ALLOWED_ORIGINS || process.env.PRODUCTION_CORS_ORIGINS || '';
 const allowedOrigins = configuredOrigins
   .split(',')
   .map((origin) => origin.trim())
   .filter((origin) => origin.length > 0);
 
 if (process.env.NODE_ENV === 'production' && allowedOrigins.length === 0) {
-  throw new Error('PRODUCTION_CORS_ORIGINS must be configured in production.');
+  throw new Error('ALLOWED_ORIGINS (or PRODUCTION_CORS_ORIGINS) must be configured in production.');
 }
 
 const fallbackLocalOrigins = ['http://localhost:3000', 'http://127.0.0.1:3000'];
