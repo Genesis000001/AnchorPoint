@@ -418,6 +418,7 @@ const App = () => {
               </select>
               <NetworkSelector />
               <UserAvatarDropdown
+                walletAddress={wallet?.publicKey}
                 onSettings={() => setActiveTab('settings')}
                 onNotifications={() => setActiveTab('notifications')}
                 onSignOut={() => {
