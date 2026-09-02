@@ -192,14 +192,22 @@
     color: #000000;
   }
 
+  /* Hide dashboard chrome while printing a receipt: sidebar, header/nav,
+     action buttons, filters, and any screen-only widgets. */
   nav,
   header,
+  aside,
+  footer,
   .no-print,
+  .print-hidden,
+  .action-button,
+  .no-print button,
   [data-testid="sidebar"],
   [data-testid="backend-status"],
   button,
   select,
-  input {
+  input,
+  textarea {
     display: none !important;
   }
 
@@ -214,9 +222,16 @@
     margin: 0 !important;
   }
 
+  main {
+    display: block !important;
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+
   .receipt-print {
     color: #000000;
     font-family: Inter, sans-serif;
+    break-inside: avoid;
   }
 
   .receipt-print table {
@@ -229,9 +244,12 @@
     border: 1px solid #000000;
     padding: 0.5rem;
     text-align: left;
+    color: #000000;
   }
 
   .receipt-print th {
     background: #f3f4f6;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 }
