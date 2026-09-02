@@ -1,9 +1,11 @@
-import { useState, useId } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
-import { AlertCircle, CheckCircle2 } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Calculator } from 'lucide-react';
 import type { FieldRequirement } from '../types';
 import { validateField, validateAll } from '../lib/validation';
 import { useTranslation } from '../i18n/config';
+import { computePayoutBreakdown, fetchFeeEstimate } from '../lib/fees';
+import type { FeeEstimate } from '../lib/fees';
 
 interface FormValues {
   [key: string]: string;
@@ -18,7 +20,21 @@ interface WithdrawalFormProps {
   fields: FieldRequirement[];
   /** Called with validated form values when the user submits */
   onSubmit: (values: FormValues) => void;
+  /** Asset code being withdrawn (e.g. 'USDC'). Used for fee estimation. */
+  assetCode?: string;
+  /** Base URL of the anchor API used for fee estimation. */
+  apiBaseUrl?: string;
+  /** Optional fee estimator override (used in tests / alternate backends). */
+  onEstimateFee?: (params: { assetCode: string; amount: string }) => Promise<FeeEstimate>;
 }
+
+const FEE_DEBOUNCE_MS = 300;
+
+type FeeState =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'success'; estimate: FeeEstimate }
+  | { status: 'error'; message: string };
 
 const getFieldType = (key: string): React.HTMLInputTypeAttribute => {
   if (key.toLowerCase().includes('amount')) return 'number';
@@ -26,7 +42,16 @@ const getFieldType = (key: string): React.HTMLInputTypeAttribute => {
   return 'text';
 };
 
-export const WithdrawalForm = ({ fields, onSubmit }: WithdrawalFormProps) => {
+const formatMoney = (value: number): string =>
+  value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+
+export const WithdrawalForm = ({
+  fields,
+  onSubmit,
+  assetCode,
+  apiBaseUrl = 'http://localhost:3002',
+  onEstimateFee,
+}: WithdrawalFormProps) => {
   const formId = useId();
   const { t } = useTranslation();
   const [values, setValues] = useState<FormValues>(() =>
@@ -35,6 +60,61 @@ export const WithdrawalForm = ({ fields, onSubmit }: WithdrawalFormProps) => {
   const [errors, setErrors] = useState<FieldError>({});
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [submitted, setSubmitted] = useState(false);
+  const [feeState, setFeeState] = useState<FeeState>({ status: 'idle' });
+
+  const amountField = useMemo(
+    () => fields.find((f) => f.key.toLowerCase().includes('amount')),
+    [fields],
+  );
+  const amountKey = amountField?.key;
+  const amountValue = amountKey ? (values[amountKey] ?? '') : '';
+
+  const estimateFee = useCallback(
+    (params: { assetCode: string; amount: string }) => {
+      if (onEstimateFee) return onEstimateFee(params);
+      return fetchFeeEstimate(apiBaseUrl, params.assetCode, params.amount);
+    },
+    [onEstimateFee, apiBaseUrl],
+  );
+
+  // Debounced fee estimation triggered by amount changes.
+  useEffect(() => {
+    if (!amountKey || !assetCode) {
+      setFeeState({ status: 'idle' });
+      return;
+    }
+
+    const trimmed = amountValue.trim();
+    const amount = parseFloat(trimmed);
+
+    if (!trimmed || !Number.isFinite(amount) || amount <= 0) {
+      setFeeState({ status: 'idle' });
+      return;
+    }
+
+    let cancelled = false;
+    setFeeState({ status: 'loading' });
+
+    const timer = setTimeout(() => {
+      estimateFee({ assetCode, amount: trimmed })
+        .then((estimate) => {
+          if (!cancelled) setFeeState({ status: 'success', estimate });
+        })
+        .catch((err: unknown) => {
+          if (!cancelled) {
+            setFeeState({
+              status: 'error',
+              message: err instanceof Error ? err.message : 'Unable to estimate fee.',
+            });
+          }
+        });
+    }, FEE_DEBOUNCE_MS);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [amountValue, amountKey, assetCode, estimateFee]);
 
   const handleChange = (key: string, value: string) => {
     setValues((prev) => ({ ...prev, [key]: value }));
@@ -68,6 +148,14 @@ export const WithdrawalForm = ({ fields, onSubmit }: WithdrawalFormProps) => {
 
   const hasErrors = Object.values(errors).some(Boolean);
   const errorCount = Object.values(errors).filter(Boolean).length;
+
+  const parsedAmount = parseFloat(amountValue);
+  const breakdown =
+    feeState.status === 'success' && Number.isFinite(parsedAmount)
+      ? computePayoutBreakdown(parsedAmount, feeState.estimate)
+      : null;
+  const netPayout = breakdown?.netPayout ?? null;
+  const disableSubmit = netPayout !== null && netPayout <= 0;
 
   return (
     <form
@@ -172,9 +260,75 @@ export const WithdrawalForm = ({ fields, onSubmit }: WithdrawalFormProps) => {
         );
       })}
 
+      {/* Dynamic fee summary breakdown */}
+      {amountKey && (
+        <div
+          data-testid="fee-summary"
+          aria-live="polite"
+          className="rounded-xl border border-slate-700/80 bg-slate-900/60 p-4"
+        >
+          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-200">
+            <Calculator size={15} className="text-primary" aria-hidden="true" />
+            Fee Summary
+          </h3>
+
+          {feeState.status === 'loading' ? (
+            <p className="text-xs text-slate-400">Estimating fees…</p>
+          ) : feeState.status === 'error' ? (
+            <p className="flex items-center gap-1.5 text-xs text-amber-400" role="alert">
+              <AlertCircle size={12} aria-hidden="true" />
+              {feeState.message}
+            </p>
+          ) : breakdown ? (
+            <>
+              <dl className="space-y-1.5 text-sm">
+                <div className="flex items-center justify-between">
+                  <dt className="text-slate-400">Amount</dt>
+                  <dd data-testid="fee-amount" className="font-medium text-slate-200">
+                    {formatMoney(breakdown.amount)}
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between">
+                  <dt className="text-slate-400">Fixed Fee</dt>
+                  <dd data-testid="fee-fixed" className="font-medium text-rose-300">
+                    -{formatMoney(breakdown.fixedFee)}
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between">
+                  <dt className="text-slate-400">% Fee</dt>
+                  <dd data-testid="fee-percent" className="font-medium text-rose-300">
+                    -{formatMoney(breakdown.percentFee)}
+                  </dd>
+                </div>
+                <div className="my-1 border-t border-slate-700/70" />
+                <div className="flex items-center justify-between">
+                  <dt className="font-semibold text-slate-300">You Receive</dt>
+                  <dd data-testid="fee-net" className="font-semibold text-emerald-400">
+                    {formatMoney(breakdown.netPayout)}
+                  </dd>
+                </div>
+              </dl>
+
+              {disableSubmit && (
+                <p
+                  className="mt-3 flex items-center gap-1.5 text-xs text-rose-400"
+                  role="alert"
+                >
+                  <AlertCircle size={12} aria-hidden="true" />
+                  Amount after fees is zero or negative. Increase the amount to continue.
+                </p>
+              )}
+            </>
+          ) : (
+            <p className="text-xs text-slate-400">Enter an amount to preview fees.</p>
+          )}
+        </div>
+      )}
+
       <button
         type="submit"
-        className="btn-primary w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-text"
+        disabled={disableSubmit}
+        className="btn-primary w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-text disabled:cursor-not-allowed disabled:opacity-50"
       >
         {t('withdraw.submit')}
       </button>

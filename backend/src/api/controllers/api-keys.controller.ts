@@ -56,3 +56,23 @@ export const revokeKey =
 
     return res.status(204).send();
   };
+
+export const rotateKeyHandler =
+  (apiKeyService: ApiKeyService) => async (req: AuthRequest, res: Response) => {
+    const publicKey = req.user?.publicKey;
+    if (!publicKey) return res.status(401).json({ error: "Unauthorized" });
+
+    const user = await getUserByPublicKey(publicKey);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const { keyId, overlapDays } = req.body;
+    if (!keyId) return res.status(400).json({ error: "keyId is required" });
+
+    try {
+      const result = await apiKeyService.rotateKey(user.id, keyId, overlapDays ?? 7);
+      return res.status(200).json(result);
+    } catch (err: any) {
+      return res.status(400).json({ error: err.message || "Failed to rotate key" });
+    }
+  };
+

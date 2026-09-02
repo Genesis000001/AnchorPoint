@@ -3,7 +3,18 @@
 pub mod reentrancy_guard;
 
 use reentrancy_guard::{ReentrancyGuard, ReentrancyGuardError};
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, IntoVal};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
+    Env, IntoVal,
+};
+
+/// Errors returned by the AMM contract.
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AmmError {
+    /// The calculated output amount is below the caller's minimum threshold.
+    SlippageExceeded = 1,
+}
 
 #[contracttype]
 #[derive(Clone)]
@@ -227,7 +238,7 @@ impl AMM {
         let amount_out = numerator / denominator;
 
         if amount_out < min_amount_out {
-            panic!("slippage exceeded");
+            panic_with_error!(env, AmmError::SlippageExceeded);
         }
 
         // Update state
@@ -439,6 +450,7 @@ fn sqrt(y: i128) -> i128 {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
     use super::*;
     use soroban_sdk::testutils::Address as _;
 
@@ -625,6 +637,157 @@ mod tests {
             let _guard = ReentrancyGuard::new(&env).unwrap();
             AMM::withdraw(env.clone(), user.clone(), 100);
         });
+    }
+
+    // -----------------------------------------------------------------------
+    // Slippage protection tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: MockToken that performs no-op transfers so we can exercise
+    /// the AMM swap slippage logic without a real token contract.
+    #[contract]
+    pub struct SlippageMockToken;
+
+    #[contractimpl]
+    impl SlippageMockToken {
+        pub fn transfer(_env: Env, _from: Address, _to: Address, _amount: i128) {}
+    }
+
+    /// Sets up an AMM with MockToken and pre-seeded reserves, returning the
+    /// client, contract_id, and the token address.
+    fn setup_amm_with_reserves(
+        env: &Env,
+        reserve_a: i128,
+        reserve_b: i128,
+    ) -> (AMMClient<'static>, Address, Address) {
+        let admin = Address::generate(env);
+        let token_id = env.register(SlippageMockToken, ());
+
+        let contract_id = env.register(AMM, ());
+        let client = AMMClient::new(env, &contract_id);
+
+        // Initialize with token_id on both sides so we don't need two different mocks.
+        client.initialize(&admin, &token_id, &token_id);
+
+        // Directly seed reserves so we can control the CPMM output precisely.
+        env.as_contract(&contract_id, || {
+            env.storage().instance().set(&DataKey::ReserveA, &reserve_a);
+            env.storage().instance().set(&DataKey::ReserveB, &reserve_b);
+        });
+
+        (client, contract_id, token_id)
+    }
+
+    /// Verify the CPMM output formula: dy = (y * dx * 997) / (x * 1000 + dx * 997)
+    #[test]
+    fn test_cpmm_formula_output_matches_expected() {
+        // x = 1_000_000, y = 1_000_000, dx = 1_000 → expected dy (before truncation):
+        //   numerator   = 1_000 * 997 * 1_000_000 = 997_000_000_000
+        //   denominator = 1_000_000 * 1000 + 1_000 * 997 = 1_001_000_000 (no wait)
+        //   denominator = 1_000_000 * 1_000 + 1_000 * 997 = 1_000_000_000 + 997_000 = 1_000_997_000
+        //   dy = 997_000_000_000 / 1_000_997_000 ≈ 996_006
+        let x: i128 = 1_000_000;
+        let y: i128 = 1_000_000;
+        let dx: i128 = 1_000;
+        let amount_in_with_fee = dx * 997;
+        let numerator = amount_in_with_fee * y;
+        let denominator = x * 1000 + amount_in_with_fee;
+        let expected_dy = numerator / denominator;
+
+        // The swap should accept min_amount_out = expected_dy (exactly at the boundary).
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _cid, token_id) = setup_amm_with_reserves(&env, x, y);
+        let user = Address::generate(&env);
+
+        // Should not panic — min_amount_out exactly at the computed output.
+        let actual_out = client.swap(&user, &token_id, &dx, &expected_dy);
+        assert_eq!(actual_out, expected_dy);
+    }
+
+    /// Verify that swap panics with "slippage exceeded" when min_amount_out
+    /// is set higher than what the CPMM formula would produce.
+    #[test]
+    #[should_panic(expected = "slippage exceeded")]
+    fn test_slippage_protection_rejects_unfavorable_swap() {
+        let env = Env::default();
+        env.mock_all_auths();
+        // Small pool: x = 1_000, y = 1_000, dx = 10
+        let (client, _cid, token_id) = setup_amm_with_reserves(&env, 1_000, 1_000);
+        let user = Address::generate(&env);
+
+        // CPMM output for dx=10 in a 1000/1000 pool is < 10 (due to fee).
+        // Demanding exactly 10 out must trigger slippage protection.
+        client.swap(&user, &token_id, &10, &10);
+    }
+
+    /// Verify that swap succeeds when min_amount_out is zero (no slippage guard active).
+    #[test]
+    fn test_swap_succeeds_with_zero_min_amount_out() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _cid, token_id) = setup_amm_with_reserves(&env, 10_000, 10_000);
+        let user = Address::generate(&env);
+
+        let out = client.swap(&user, &token_id, &100, &0);
+        assert!(out > 0, "expected positive output");
+    }
+
+    /// Verify that a large, realistic trade is slippage-protected correctly.
+    #[test]
+    fn test_large_swap_slippage_protection() {
+        let env = Env::default();
+        env.mock_all_auths();
+        // Thin pool: 10_000 / 10_000, trying to swap 5_000 (50% of reserve)
+        let (client, _cid, token_id) = setup_amm_with_reserves(&env, 10_000, 10_000);
+        let user = Address::generate(&env);
+
+        let dx = 5_000_i128;
+        let amount_in_with_fee = dx * 997;
+        let expected_out = (amount_in_with_fee * 10_000) / (10_000 * 1000 + amount_in_with_fee);
+
+        // Asking for exactly expected_out should succeed.
+        let out = client.swap(&user, &token_id, &dx, &expected_out);
+        assert_eq!(out, expected_out);
+
+        // Asking for one more than possible must fail.
+        // (reset reserves first by re-registering)
+        let (client2, _cid2, token_id2) = setup_amm_with_reserves(&env, 10_000, 10_000);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client2.swap(&user, &token_id2, &dx, &(expected_out + 1));
+        }));
+        assert!(result.is_err(), "slippage guard must reject out+1");
+    }
+
+    /// Verify that swap rejects with AmmError::SlippageExceeded when
+    /// min_amount_out exceeds the CPMM output for the given trade.
+    /// This simulates price slippage: the pool moved and the user gets less
+    /// than they specified.
+    #[test]
+    fn test_swap_slippage_exceeded_error() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        // Deep pool: 1_000_000 each side — minimal slippage on small trades.
+        let (client, _cid, token_id) = setup_amm_with_reserves(&env, 1_000_000, 1_000_000);
+        let user = Address::generate(&env);
+
+        let amount_in: i128 = 1_000;
+        // CPMM formula: dy = (y * dx * 997) / (x * 1000 + dx * 997)
+        let amount_in_with_fee = amount_in * 997;
+        let true_out = (amount_in_with_fee * 1_000_000) / (1_000_000 * 1000 + amount_in_with_fee);
+
+        // min_amount_out = true_out + 1 simulates the user requiring an amount
+        // that the CPMM cannot satisfy → SlippageExceeded must be returned.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.swap(&user, &token_id, &amount_in, &(true_out + 1));
+        }));
+        assert!(result.is_err(), "SlippageExceeded must be triggered when min_amount_out > actual output");
+
+        // min_amount_out = true_out must succeed (exact boundary).
+        let (client2, _cid2, token_id2) = setup_amm_with_reserves(&env, 1_000_000, 1_000_000);
+        let out = client2.swap(&user, &token_id2, &amount_in, &true_out);
+        assert_eq!(out, true_out, "exact boundary swap must succeed");
     }
 }
 

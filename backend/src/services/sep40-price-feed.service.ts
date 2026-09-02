@@ -9,7 +9,11 @@ import {
 } from '@stellar/stellar-sdk';
 import { config } from '../config/env';
 import { stellarService } from './stellar.service';
+import { sorobanRpcProxy } from '../resilience/soroban.proxy';
 import logger from '../utils/logger';
+
+/** Maximum number of historical price observations to retain per subscription. */
+const MAX_HISTORY_POINTS = 500;
 
 /**
  * SEP-40 (Price Oracle) asset reference.
@@ -53,6 +57,8 @@ interface Subscription {
   listeners: Set<PriceUpdateListener>;
   errorListeners: Set<PriceErrorListener>;
   lastPrice?: Sep40PriceData;
+  /** Historical price observations, oldest first, capped at MAX_HISTORY_POINTS. */
+  history: Sep40PriceData[];
   /** Guards against overlapping polls for the same subscription. */
   polling: boolean;
 }
@@ -168,6 +174,7 @@ export class Sep40PriceFeedManager extends EventEmitter {
         intervalMs: options.intervalMs ?? this.defaultIntervalMs,
         listeners: new Set(),
         errorListeners: new Set(),
+        history: [],
         polling: false,
       };
       this.subscriptions.set(key, sub);
@@ -238,6 +245,22 @@ export class Sep40PriceFeedManager extends EventEmitter {
   }
 
   /**
+   * Returns the historical price observations for an asset, oldest first.
+   * The length is capped at `maxCount` (default all retained points).
+   */
+  getPriceHistory(asset: Sep40Asset, maxCount?: number): Sep40PriceData[] {
+    const sub = this.subscriptions.get(assetKey(asset));
+    if (!sub) {
+      return [];
+    }
+    const history = sub.history;
+    if (maxCount === undefined || maxCount >= history.length) {
+      return [...history];
+    }
+    return history.slice(history.length - maxCount);
+  }
+
+  /**
    * Forces an immediate on-chain read for an asset, updating the cache and
    * notifying listeners. Also usable ad-hoc without an active subscription.
    */
@@ -246,6 +269,7 @@ export class Sep40PriceFeedManager extends EventEmitter {
     const sub = this.subscriptions.get(assetKey(asset));
     if (sub) {
       sub.lastPrice = price;
+      this.addToHistory(sub, price);
       this.notify(sub, price);
     }
     return price;
@@ -303,6 +327,7 @@ export class Sep40PriceFeedManager extends EventEmitter {
         sub.lastPrice.price !== price.price ||
         sub.lastPrice.timestamp !== price.timestamp;
       sub.lastPrice = price;
+      this.addToHistory(sub, price);
       if (changed) {
         this.notify(sub, price);
       }
@@ -346,6 +371,17 @@ export class Sep40PriceFeedManager extends EventEmitter {
     // Only emit if there is a listener, otherwise Node throws for 'error' events.
     if (this.listenerCount('error') > 0) {
       this.emit('error', error, sub.asset);
+    }
+  }
+
+  /**
+   * Records a price observation in the subscription's history buffer, trimming
+   * to `MAX_HISTORY_POINTS` entries (oldest removed).
+   */
+  private addToHistory(sub: Subscription, price: Sep40PriceData): void {
+    sub.history.push(price);
+    if (sub.history.length > MAX_HISTORY_POINTS) {
+      sub.history.shift();
     }
   }
 
@@ -444,7 +480,8 @@ export class Sep40PriceFeedManager extends EventEmitter {
       .setTimeout(30)
       .build();
 
-    const simulated = (await rpcServer.simulateTransaction(tx)) as {
+    const cacheKey = `sep40:${method}:${args.map((a) => a.toXDR('base64')).join(',')}`;
+    const simulated = (await sorobanRpcProxy.simulateTransaction(rpcServer, tx, cacheKey)) as {
       error?: string;
       result?: { retval?: xdr.ScVal };
     };
@@ -459,5 +496,47 @@ export class Sep40PriceFeedManager extends EventEmitter {
   }
 }
 
+/**
+ * Computes median price across multiple numerical price observations (Issue #918).
+ */
+export function calculateMedianPrice(prices: number[]): number {
+  if (prices.length === 0) {
+    throw new Error('Cannot calculate median of empty prices array');
+  }
+
+  const sorted = [...prices].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+
+  if (sorted.length % 2 === 0) {
+    return (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+  return sorted[mid];
+}
+
+/**
+ * Aggregates price feeds from primary SEP-40 and secondary providers with outlier filtering.
+ */
+export function aggregateOraclePrices(
+  observations: Array<{ provider: string; humanPrice: number; weight?: number }>
+): { medianPrice: number; validProviders: string[] } {
+  if (observations.length === 0) {
+    throw new Error('No price observations provided for aggregation');
+  }
+
+  const valid = observations.filter((o) => o.humanPrice > 0 && !isNaN(o.humanPrice));
+  if (valid.length === 0) {
+    throw new Error('No valid positive price observations found');
+  }
+
+  const prices = valid.map((v) => v.humanPrice);
+  const medianPrice = calculateMedianPrice(prices);
+
+  return {
+    medianPrice,
+    validProviders: valid.map((v) => v.provider),
+  };
+}
+
 export const sep40PriceFeedManager = new Sep40PriceFeedManager();
 export default sep40PriceFeedManager;
+

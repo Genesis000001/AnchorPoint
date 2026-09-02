@@ -9,11 +9,16 @@ export interface ApiKeyRecord {
   tier: Tier;
   isActive: boolean;
   createdAt: Date;
+  expiresAt?: Date | null;
+  lastUsedAt?: Date | null;
 }
 
 export class ApiKeyService {
-  async createKey(userId: string, tier: Tier): Promise<ApiKeyRecord> {
+  async createKey(userId: string, tier: Tier, expiresInDays?: number): Promise<ApiKeyRecord> {
     const key = crypto.randomBytes(24).toString("hex"); // 48 hex chars
+    const expiresAt = expiresInDays
+      ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000)
+      : null;
 
     const record = await prisma.apiKey.create({
       data: { key, userId, tier },
@@ -26,6 +31,7 @@ export class ApiKeyService {
       tier: record.tier as Tier,
       isActive: record.isActive,
       createdAt: record.createdAt,
+      expiresAt,
     };
   }
 
@@ -34,7 +40,7 @@ export class ApiKeyService {
       where: { key: apiKey },
     });
 
-    if (!record) return null;
+    if (!record || !record.isActive) return null;
 
     return {
       id: record.id,
@@ -43,6 +49,24 @@ export class ApiKeyService {
       tier: record.tier as Tier,
       isActive: record.isActive,
       createdAt: record.createdAt,
+    };
+  }
+
+  async rotateKey(userId: string, oldKeyId: string, overlapDays = 7): Promise<{ newKey: ApiKeyRecord; oldKeyExpiresAt: Date }> {
+    const oldKey = await prisma.apiKey.findFirst({
+      where: { id: oldKeyId, userId, isActive: true },
+    });
+
+    if (!oldKey) {
+      throw new Error("Active key not found for rotation");
+    }
+
+    const newKey = await this.createKey(userId, oldKey.tier as Tier);
+    const oldKeyExpiresAt = new Date(Date.now() + overlapDays * 24 * 60 * 60 * 1000);
+
+    return {
+      newKey,
+      oldKeyExpiresAt,
     };
   }
 
@@ -82,3 +106,4 @@ export class ApiKeyService {
     return true;
   }
 }
+

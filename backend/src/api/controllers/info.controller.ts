@@ -112,6 +112,9 @@ function buildStellarInfo(): StellarInfo {
  * falls back to computing the payload fresh on every request.
  */
 export const getInfo = async (req: Request, res: Response): Promise<Response> => {
+  // SEP-1 requires stellar.toml / /info to be fetchable from any origin.
+  res.setHeader('Access-Control-Allow-Origin', '*');
+
   const format = req.query.format as string;
   const acceptHeader = req.headers.accept || '';
   const requestPath = `${req.path || ''} ${req.originalUrl || ''} ${req.url || ''}`;

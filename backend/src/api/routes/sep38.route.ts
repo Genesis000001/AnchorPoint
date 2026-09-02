@@ -29,7 +29,7 @@ router.get('/price', async (req: Request, res: Response) => {
 
     const priceQuote = await sep38Controller.getPriceQuote(
       source_asset as string,
-      parseFloat(source_amount as string),
+      source_amount as string,
       destination_asset as string,
       context as string,
     );
@@ -80,7 +80,7 @@ router.post('/quote', async (req: Request, res: Response) => {
 
     const priceQuote = await sep38Controller.createQuote(
       source_asset,
-      parseFloat(source_amount),
+      String(source_amount),
       destination_asset,
       context,
     );
@@ -116,6 +116,47 @@ router.get('/assets', async (req: Request, res: Response) => {
   try {
     const assets = await sep38Controller.getSupportedAssets();
     res.json({ assets });
+  } catch (error) {
+    if (error instanceof Error) {
+      res.status(500).json({
+        error: 'internal_server_error',
+        message: error.message,
+      });
+    } else {
+      res.status(500).json({
+        error: 'internal_server_error',
+        message: 'An unexpected error occurred',
+      });
+    }
+  }
+});
+
+/**
+ * GET /sep38/history
+ * 
+ * Get historical price data for an asset pair over the last 24 hours.
+ * 
+ * Query Parameters:
+ * - source_asset: The asset code to sell (e.g., "USDC")
+ * - destination_asset: The asset code to buy (e.g., "XLM")
+ */
+router.get('/history', async (req: Request, res: Response) => {
+  try {
+    const { source_asset, destination_asset } = req.query;
+
+    if (!source_asset || !destination_asset) {
+      return res.status(400).json({
+        error: 'missing_required_params',
+        message: 'Missing required parameters: source_asset, destination_asset',
+      });
+    }
+
+    const historicalPrices = await sep38Controller.getPriceHistory(
+      source_asset as string,
+      destination_asset as string,
+    );
+
+    res.json({ prices: historicalPrices });
   } catch (error) {
     if (error instanceof Error) {
       res.status(500).json({

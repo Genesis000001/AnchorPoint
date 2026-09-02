@@ -549,10 +549,21 @@ export class WebhookService {
   }
 
 
-  private getRetryDelay(attempt: number): number {
+  getRetryDelay(attempt: number): number {
     const config = this.getConfig();
-    return config.retryDelayMs * 2 ** (attempt - 1);
+    const initialDelay = config.retryDelayMs || 2000;
+    return calculateFullJitterBackoff(attempt, initialDelay, 3600000);
   }
+}
+
+export function calculateFullJitterBackoff(
+  attempt: number,
+  initialDelayMs: number = 2000,
+  maxDelayMs: number = 3600000
+): number {
+  const exponentialCap = Math.min(maxDelayMs, initialDelayMs * 2 ** Math.max(0, attempt - 1));
+  // Randomized full jitter between initialDelayMs and exponentialCap (or 0 and exponentialCap)
+  return Math.floor(Math.random() * (exponentialCap + 1));
 }
 
 export const defaultWebhookService = new WebhookService();

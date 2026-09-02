@@ -161,6 +161,7 @@ const App = () => {
 const AppShell = () => {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [isDesktop, setIsDesktop] = useState(false);
   const [uiConfig, setUiConfig] = useState<UiConfig>(defaultUiConfig);
   const [loadingState, setLoadingState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [wallet, setWallet] = useState<{ publicKey: string; network: string } | null>(null);
@@ -251,8 +252,12 @@ const AppShell = () => {
 
   useEffect(() => {
     const mediaQuery = window.matchMedia('(min-width: 768px)');
-    const handleMediaChange = (event: MediaQueryListEvent) => setSidebarOpen(event.matches);
+    const handleMediaChange = (event: MediaQueryListEvent) => {
+      setIsDesktop(event.matches);
+      setSidebarOpen(event.matches);
+    };
 
+    setIsDesktop(mediaQuery.matches);
     setSidebarOpen(mediaQuery.matches);
     mediaQuery.addEventListener('change', handleMediaChange);
 
@@ -260,6 +265,18 @@ const AppShell = () => {
       mediaQuery.removeEventListener('change', handleMediaChange);
     };
   }, []);
+
+  // Lock body scroll while the mobile drawer is open so the drawer is the only
+  // scrollable surface. Desktop keeps the sidebar docked, so it never locks.
+  useEffect(() => {
+    if (isDesktop || !sidebarOpen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [isDesktop, sidebarOpen]);
 
   const menuItems = useMemo(
     () => [
@@ -345,7 +362,7 @@ const AppShell = () => {
             aria-label={sidebarOpen ? 'Close navigation menu' : 'Open navigation menu'}
             aria-expanded={sidebarOpen}
             aria-controls="main-sidebar"
-            className="rounded p-2 -ml-2 lg:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+            className="relative z-20 -ml-2 rounded bg-background p-2 md:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
             onClick={() => setSidebarOpen(!sidebarOpen)}
           >
             {sidebarOpen ? <X aria-hidden="true" /> : <Menu aria-hidden="true" />}
@@ -479,8 +496,8 @@ const AppShell = () => {
                 {activeTab === 'dashboard' && (
                   <DashboardOverview uiConfig={uiConfig} isLoading={loadingState === 'loading'} />
                 )}
-                {activeTab === 'deposit' && <SEP24Flow type="deposit" uiConfig={uiConfig} />}
-                {activeTab === 'withdraw' && <SEP24Flow type="withdraw" uiConfig={uiConfig} />}
+                {activeTab === 'deposit' && <SEP24Flow type="deposit" uiConfig={uiConfig} apiBaseUrl={apiBaseUrl} />}
+                {activeTab === 'withdraw' && <SEP24Flow type="withdraw" uiConfig={uiConfig} apiBaseUrl={apiBaseUrl} />}
                 {activeTab === 'history' && <TransactionHistory />}
                 {activeTab === 'sep38' && <Sep38QuotePanel />}
                 {activeTab === 'status' && <ServiceStatusPanel />}
@@ -540,7 +557,9 @@ const ThemeToggle = () => {
 const AppRoot = () => (
   <ThemeProvider>
     <I18nProvider>
-      <App />
+      <NetworkProvider apiBaseUrl={apiBaseUrl}>
+        <App />
+      </NetworkProvider>
     </I18nProvider>
   </ThemeProvider>
 );
