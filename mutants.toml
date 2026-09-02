@@ -1,14 +1,31 @@
 # mutants.toml
-# Configuration for cargo-mutants mutation testing
+# Configuration for cargo-mutants mutation testing (https://mutants.rs/)
+#
+# cargo-mutants only auto-discovers `.cargo/mutants.toml`, so this file is
+# passed explicitly:
+#
+#   cargo mutants --config mutants.toml -p sep41-token -p staking
+#
+# The same command is run in CI (see .github/workflows/rust.yml).
 
-# Only mutate core token and staking contracts as requested
-examine_re = "src/(token|staking)/.*"
+# Only mutate the core token and staking contracts as requested.
+examine_globs = ["src/token/**", "src/staking/**"]
 
-# Standard timeout for Soroban contract tests
-timeout = 300
+# Skip test and example files.
+exclude_globs = ["**/tests/**", "**/examples/**"]
 
-# Skip tests and examples
-exclude_re = "tests/.*|examples/.*"
+# Standard timeout floor for Soroban contract tests, in seconds.
+minimum_test_timeout = 300
 
-# Mutants to skip (e.g. things that are hard to test or not relevant)
-# For now, we want to be as thorough as possible.
+# Turn off rustc lints while building mutants so denied warnings don't make
+# mutants unviable.
+cap_lints = true
+
+# Mutants excluded as behaviorally equivalent in every reachable state:
+# - calc_new_rewards' early-return guard (`amount == 0 || last_updated == 0
+#   || current_time <= last_updated`). Replacing either `||` with `&&` only
+#   differs from the original when the stake has a positive amount with
+#   `last_updated == 0` (unreachable: stake() always sets it to the current
+#   timestamp) or when time moves backwards (impossible on-ledger), and in
+#   those states the mutated guard computes the same value (0).
+exclude_re = ["replace \\|\\| with && in StakingContract::calc_new_rewards"]

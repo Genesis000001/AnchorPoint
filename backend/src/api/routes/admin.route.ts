@@ -1,5 +1,13 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
+import { validate } from '../middleware/validate.middleware';
+import {
+  switchNetworkSchema,
+  patchTransactionSchema,
+  passwordResetRequestSchema,
+  passwordResetConfirmSchema,
+  purgeCacheSchema,
+} from './admin.schemas';
 import { stellarService } from '../../services/stellar.service';
 import { NetworkType } from '../../config/networks';
 import { SEP31Service } from '../../services/sep31.service';
@@ -78,7 +86,7 @@ router.get('/network', (req: Request, res: Response) => {
  *       400:
  *         description: Invalid network type
  */
-router.post('/network', (req: Request, res: Response) => {
+router.post('/network', validate({ body: switchNetworkSchema }), (req: Request, res: Response) => {
   const { network } = req.body;
 
   if (!Object.values(NetworkType).includes(network)) {
@@ -128,7 +136,7 @@ router.post('/network', (req: Request, res: Response) => {
  *       200:
  *         description: Transaction status updated successfully
  */
-router.patch('/transactions/:id', async (req: Request, res: Response) => {
+router.patch('/transactions/:id', validate({ body: patchTransactionSchema }), async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { status, stellar_transaction_id, external_transaction_id, amount_out, amount_fee } = req.body;
@@ -170,7 +178,7 @@ router.patch('/transactions/:id', async (req: Request, res: Response) => {
  *       400:
  *         description: Invalid payload
  */
-router.post('/password-reset/request', async (req: Request, res: Response) => {
+router.post('/password-reset/request', validate({ body: passwordResetRequestSchema }),
   const parsed = passwordResetRequestSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({
@@ -224,7 +232,7 @@ router.post('/password-reset/request', async (req: Request, res: Response) => {
  *       400:
  *         description: Invalid token or payload
  */
-router.post('/password-reset/confirm', async (req: Request, res: Response) => {
+router.post('/password-reset/confirm', validate({ body: passwordResetConfirmSchema }),
   const parsed = passwordResetConfirmSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({
@@ -371,7 +379,7 @@ const purgeTomlCacheSchema = z.object({
  *                   type: integer
  *                   description: Number of cache entries removed
  */
-router.post('/cache/purge-toml', async (req: Request, res: Response) => {
+router.post('/cache/purge-toml', validate({ body: purgeCacheSchema }), async (req: Request, res: Response) => {
   const parsed = purgeTomlCacheSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({

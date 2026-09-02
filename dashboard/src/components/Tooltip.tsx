@@ -1,12 +1,13 @@
 import React, { useId, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import type { Variants } from 'framer-motion';
 import { HelpCircle } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // Animation variants
 // ---------------------------------------------------------------------------
 
-const tooltipVariants = {
+const tooltipVariants: Variants = {
   hidden: { opacity: 0, y: 4, scale: 0.97 },
   visible: {
     opacity: 1,
@@ -21,54 +22,6 @@ const tooltipVariants = {
     transition: { duration: 0.1, ease: 'easeIn' },
   },
 };
-
-// ---------------------------------------------------------------------------
-// Tooltip
-// ---------------------------------------------------------------------------
-
-interface TooltipProps {
-  /** Explanatory text shown in the floating bubble. */
-  content: string;
-  /** Element that triggers the tooltip. */
-  children: React.ReactNode;
-  /**
-   * Preferred placement relative to the trigger.
-   * @default 'top'
-   */
-  placement?: 'top' | 'bottom';
-}
-
-/**
- * Animated tooltip that wraps any element.
- * Reveals on hover **and** keyboard focus for full accessibility.
- *
- * @example
- * <Tooltip content="The duration the SEP-10 challenge is valid.">
- *   <input … />
- * </Tooltip>
- */
-const Tooltip: React.FC<TooltipProps> = ({
-  content,
-  children,
-  placement = 'top',
-}) => {
-  const [visible, setVisible] = useState(false);
-  const tooltipId = useId();
-
-  const show = () => setVisible(true);
-  const hide = () => setVisible(false);
-
-  const isTop = placement === 'top';
-
-  return (
-    <span className="relative inline-flex items-center">
-      <span
-        onMouseEnter={show}
-        onMouseLeave={hide}
-        onFocus={show}
-        onBlur={hide}
-import { AnimatePresence, motion } from 'framer-motion';
-import { HelpCircle } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // Tooltip — generic hover/focus tooltip with Framer Motion animation
@@ -101,7 +54,7 @@ const Tooltip: React.FC<TooltipProps> = ({ content, children, placement = 'top' 
         onBlur={() => setVisible(false)}
       >
         {typeof children === 'object' && children !== null && 'props' in children
-          ? React.cloneElement(children as React.ReactElement, {
+          ? React.cloneElement(children as React.ReactElement<Record<string, unknown>>, {
               'aria-describedby': visible ? tooltipId : undefined,
             })
           : children}
@@ -122,13 +75,6 @@ const Tooltip: React.FC<TooltipProps> = ({ content, children, placement = 'top' 
               'border border-slate-600 bg-slate-800 px-3 py-2 text-xs leading-relaxed text-slate-200 shadow-xl',
               isTop ? 'bottom-full mb-2' : 'top-full mt-2',
             ].join(' ')}
-            initial={{ opacity: 0, y: isTop ? 4 : -4, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: isTop ? 4 : -4, scale: 0.96 }}
-            transition={{ duration: 0.15, ease: 'easeOut' }}
-            className={`pointer-events-none absolute left-1/2 z-50 w-60 -translate-x-1/2 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200 shadow-xl ${
-              isTop ? 'bottom-full mb-2' : 'top-full mt-2'
-            }`}
           >
             {content}
             {/* Arrow */}
@@ -140,11 +86,6 @@ const Tooltip: React.FC<TooltipProps> = ({ content, children, placement = 'top' 
                   ? 'top-full border-t-slate-800'
                   : 'bottom-full border-b-slate-800',
               ].join(' ')}
-              className={`absolute left-1/2 -translate-x-1/2 border-4 border-transparent ${
-                isTop
-                  ? 'top-full border-t-slate-900'
-                  : 'bottom-full border-b-slate-900'
-              }`}
             />
           </motion.span>
         )}
@@ -214,6 +155,8 @@ export const AnchorConfigTooltips = {
     />
   ),
 } as const;
+
+// ---------------------------------------------------------------------------
 // ConfigLabel — wraps a configuration input label with an info (?) icon
 // that shows a tooltip explaining the technical term on hover.
 //

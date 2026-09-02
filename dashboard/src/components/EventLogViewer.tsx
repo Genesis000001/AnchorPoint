@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Copy, Filter, Terminal, Trash2 } from 'lucide-react';
+import { Check, Copy, Filter, Search, Terminal, Trash2, X } from 'lucide-react';
 import {
   decodeContractEvent,
   decodeContractEventEnvelope,
@@ -25,6 +25,8 @@ export interface RawContractEvent {
   timestamp?: string;
 }
 
+export type Severity = 'INFO' | 'WARN' | 'ERROR';
+
 export interface LogEntry {
   id: string;
   timestamp: string;
@@ -32,9 +34,47 @@ export interface LogEntry {
   /** Event name taken from the first topic. */
   topic: string;
   contractId?: string;
+  /** Severity derived from the event topic name. */
+  severity: Severity;
 }
 
 const MAX_ENTRIES = 200;
+
+// ---------------------------------------------------------------------------
+// Severity helpers
+// ---------------------------------------------------------------------------
+
+const ERROR_PATTERN = /error|fail|fault|reject|abort/i;
+const WARN_PATTERN = /warn|caution|deprecat/i;
+
+/**
+ * Derives a log severity level from the event topic name.
+ *
+ * - Topics matching `error`, `fail`, `fault`, `reject`, or `abort` → ERROR
+ * - Topics matching `warn`, `caution`, or `deprecat` → WARN
+ * - Everything else → INFO
+ */
+export const deriveSeverity = (topic: string): Severity => {
+  if (ERROR_PATTERN.test(topic)) return 'ERROR';
+  if (WARN_PATTERN.test(topic)) return 'WARN';
+  return 'INFO';
+};
+
+const SEVERITY_STYLES: Record<Severity, string> = {
+  ERROR: 'bg-red-500/20 text-red-300 border-red-500/40',
+  WARN: 'bg-yellow-500/20 text-yellow-300 border-yellow-500/40',
+  INFO: 'bg-slate-700/40 text-slate-400 border-slate-600/40',
+};
+
+const SeverityBadge: React.FC<{ severity: Severity }> = ({ severity }) => (
+  <span
+    className={`inline-block rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${SEVERITY_STYLES[severity]}`}
+    aria-label={`Severity ${severity}`}
+  >
+    {severity}
+  </span>
+);
+
 
 // ---------------------------------------------------------------------------
 // Presentation helpers
@@ -157,15 +197,36 @@ export const toLogEntry = (raw: RawContractEvent): LogEntry => {
 
   // An envelope carries its own contract id; a split frame supplies one.
   const contractId = decoded.contractId ?? raw.contractId;
+  const topic = eventName(decoded);
 
   return {
     id: raw.id ?? `event-${(fallbackId += 1)}`,
     timestamp: raw.timestamp ?? new Date().toISOString(),
     decoded: { ...decoded, contractId },
-    topic: eventName(decoded),
+    topic,
     contractId,
+    severity: deriveSeverity(topic),
   };
 };
+
+// ---------------------------------------------------------------------------
+// useDebounce
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns a debounced copy of `value` that only updates after `delay` ms of
+ * inactivity. Used to avoid filtering on every keystroke.
+ */
+function useDebounce<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState<T>(value);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
+
+  return debounced;
+}
 
 // ---------------------------------------------------------------------------
 // EventLogViewer
@@ -196,10 +257,14 @@ export const EventLogViewer: React.FC<EventLogViewerProps> = ({
     (initialEvents ?? []).map(toLogEntry),
   );
   const [contractFilter, setContractFilter] = useState<string>('all');
+  const [severityFilter, setSeverityFilter] = useState<Severity | 'all'>('all');
+  const [searchInput, setSearchInput] = useState('');
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const esRef = useRef<EventSource | null>(null);
+
+  const debouncedSearch = useDebounce(searchInput, 300);
 
   useEffect(() => {
     // jsdom and older webviews have no EventSource; the seeded log still works.
@@ -248,15 +313,53 @@ export const EventLogViewer: React.FC<EventLogViewerProps> = ({
     return [...ids].sort();
   }, [events]);
 
-  const filtered = useMemo(
-    () =>
-      contractFilter === 'all'
-        ? events
-        : events.filter((event) => event.contractId === contractFilter),
-    [events, contractFilter],
-  );
+  /**
+   * Multi-pass filter pipeline:
+   * 1. Contract ID dropdown
+   * 2. Severity dropdown
+   * 3. Debounced search text — matches against topic, contractId, and full
+   *    decoded JSON payload (event name / correlation id / amounts / etc.)
+   */
+  const filtered = useMemo(() => {
+    let result = events;
+
+    if (contractFilter !== 'all') {
+      result = result.filter((e) => e.contractId === contractFilter);
+    }
+
+    if (severityFilter !== 'all') {
+      result = result.filter((e) => e.severity === severityFilter);
+    }
+
+    const query = debouncedSearch.trim().toLowerCase();
+    if (query) {
+      result = result.filter((e) => {
+        if (e.topic.toLowerCase().includes(query)) return true;
+        if (e.contractId?.toLowerCase().includes(query)) return true;
+        // Search the full decoded payload text for correlation ids / amounts
+        const json = toDecodedJson({
+          contractId: e.contractId,
+          topics: e.decoded.topics.map((t) => t.value),
+          data: e.decoded.data.value,
+        });
+        return json.toLowerCase().includes(query);
+      });
+    }
+
+    return result;
+  }, [events, contractFilter, severityFilter, debouncedSearch]);
 
   const handleClear = useCallback(() => setEvents([]), []);
+  const handleClearSearch = useCallback(() => setSearchInput(''), []);
+
+  const hasActiveFilters =
+    searchInput !== '' || contractFilter !== 'all' || severityFilter !== 'all';
+
+  const emptyMessage = (): string => {
+    if (events.length === 0) return 'Waiting for events…';
+    if (hasActiveFilters) return 'No events match the current search and filter criteria.';
+    return 'No events for the selected contract.';
+  };
 
   return (
     <section
@@ -275,7 +378,56 @@ export const EventLogViewer: React.FC<EventLogViewerProps> = ({
         />
 
         <div className="ml-auto flex items-center gap-2">
+          {/* Search input */}
+          <div className="relative flex items-center">
+            <Search
+              size={12}
+              className="pointer-events-none absolute left-2 text-slate-400"
+              aria-hidden="true"
+            />
+            <label htmlFor="event-search" className="sr-only">
+              Search events
+            </label>
+            <input
+              id="event-search"
+              type="search"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="Search events…"
+              aria-label="Search events"
+              className="w-44 rounded-md border border-slate-700 bg-slate-800 py-1 pl-6 pr-6 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            {searchInput && (
+              <button
+                type="button"
+                onClick={handleClearSearch}
+                aria-label="Clear search"
+                className="absolute right-1.5 rounded p-0.5 text-slate-400 hover:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <X size={11} aria-hidden="true" />
+              </button>
+            )}
+          </div>
+
           <Filter size={13} className="text-slate-400" aria-hidden="true" />
+
+          {/* Severity filter */}
+          <label htmlFor="severity-filter" className="sr-only">
+            Filter by severity
+          </label>
+          <select
+            id="severity-filter"
+            value={severityFilter}
+            onChange={(e) => setSeverityFilter(e.target.value as Severity | 'all')}
+            className="rounded-md border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="all">All severities</option>
+            <option value="INFO">INFO</option>
+            <option value="WARN">WARN</option>
+            <option value="ERROR">ERROR</option>
+          </select>
+
+          {/* Contract filter */}
           <label htmlFor="contract-filter" className="sr-only">
             Filter by contract ID
           </label>
@@ -313,11 +465,27 @@ export const EventLogViewer: React.FC<EventLogViewerProps> = ({
         {error && <p className="mb-2 text-xs text-red-400">{error}</p>}
 
         {filtered.length === 0 ? (
-          <p className="text-xs text-slate-500">
-            {events.length === 0
-              ? 'Waiting for events…'
-              : 'No events for the selected contract.'}
-          </p>
+          <div
+            role="status"
+            aria-live="polite"
+            className="flex flex-col items-center justify-center gap-2 py-10 text-center"
+          >
+            <Search size={20} className="text-slate-600" aria-hidden="true" />
+            <p className="text-xs text-slate-500">{emptyMessage()}</p>
+            {hasActiveFilters && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchInput('');
+                  setSeverityFilter('all');
+                  setContractFilter('all');
+                }}
+                className="mt-1 rounded-md border border-slate-700 bg-slate-800 px-3 py-1 text-xs text-slate-300 hover:bg-slate-700 hover:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                Clear all filters
+              </button>
+            )}
+          </div>
         ) : (
           filtered.map((event) => {
             const json = toDecodedJson({
@@ -334,6 +502,7 @@ export const EventLogViewer: React.FC<EventLogViewerProps> = ({
               >
                 <div className="mb-1.5 flex flex-wrap items-center gap-2">
                   <TopicBadge topic={event.topic} />
+                  <SeverityBadge severity={event.severity} />
                   <time className="text-[10px] text-slate-500" dateTime={event.timestamp}>
                     {event.timestamp}
                   </time>

@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from 'framer-motion';
-import { Sun, Moon, X } from 'lucide-react';
+import { Sun, Moon } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import type { ComponentType } from 'react';
 import type { UiConfig } from '../types';
@@ -70,7 +70,7 @@ export const Sidebar = ({
           exit={{ opacity: 0 }}
           transition={{ duration: 0.2 }}
           aria-label="Close navigation menu overlay"
-          className="fixed inset-0 z-40 bg-slate-950/70 backdrop-blur-sm lg:hidden"
+          className="fixed inset-0 z-40 bg-slate-950/70 backdrop-blur-sm md:hidden"
           onClick={onClose}
         />
       ) : null}
@@ -83,7 +83,7 @@ export const Sidebar = ({
       initial={false}
       animate={{ x: sidebarOpen ? 0 : '-100%' }}
       transition={{ type: 'spring', stiffness: 260, damping: 24 }}
-      className="fixed inset-y-0 left-0 z-50 w-[min(18rem,calc(100vw-2rem))] border-r border-slate-800 bg-card lg:relative lg:w-64 lg:translate-x-0"
+      className="fixed inset-y-0 left-0 z-50 w-[min(18rem,calc(100vw-2rem))] border-r border-slate-800 bg-card md:relative md:w-64 md:translate-x-0"
     >
       <div className="p-5 sm:p-6">
         <div className="mb-8 flex items-center gap-3 sm:mb-10">
@@ -112,7 +112,7 @@ export const Sidebar = ({
                         : 'text-slate-400 hover:bg-slate-900 hover:text-slate-200'
                     }`}
                   >
-                    <Icon size={20} aria-hidden="true" />
+                    <Icon size={20} aria-hidden />
                     <span className="font-medium">{item.label}</span>
                   </button>
                 </li>

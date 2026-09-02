@@ -261,6 +261,145 @@ const options: swaggerJsdoc.Options = {
             },
           },
         },
+        Sep1Info: {
+          type: 'object',
+          description: 'SEP-1 anchor information (stellar.toml equivalent)',
+          properties: {
+            version: {
+              type: 'string',
+              description: 'Info version',
+            },
+            network: {
+              type: 'string',
+              description: 'Stellar network (e.g., public, testnet)',
+            },
+            federation_server: {
+              type: 'string',
+              description: 'Federation server URL',
+            },
+            auth_server: {
+              type: 'string',
+              description: 'Authentication server URL',
+            },
+            kyc_server: {
+              type: 'string',
+              description: 'KYC server URL',
+            },
+            web_auth_endpoint: {
+              type: 'string',
+              description: 'SEP-10 web authentication endpoint',
+            },
+            transfer_server: {
+              type: 'string',
+              description: 'SEP-6 transfer server URL',
+            },
+            transfer_server_sep24: {
+              type: 'string',
+              description: 'SEP-24 transfer server URL',
+            },
+            deposit_server: {
+              type: 'string',
+              description: 'Deposit server URL',
+            },
+            withdrawal_server: {
+              type: 'string',
+              description: 'Withdrawal server URL',
+            },
+            accounts: {
+              type: 'object',
+              properties: {
+                receiving: {
+                  type: 'string',
+                  description: 'Receiving Stellar account public key',
+                },
+                distribution: {
+                  type: 'string',
+                  description: 'Distribution Stellar account public key',
+                },
+              },
+            },
+            assets: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  code: { type: 'string' },
+                  issuer: { type: 'string' },
+                  status: { type: 'string' },
+                  is_asset_anchored: { type: 'boolean' },
+                  anchored_asset_type: { type: 'string' },
+                  desc: { type: 'string' },
+                  max_amount: { type: 'string' },
+                  min_amount: { type: 'string' },
+                  fee_fixed: { type: 'number' },
+                  fee_percent: { type: 'number' },
+                  fee_minimum: { type: 'number' },
+                },
+              },
+            },
+            signing_key: {
+              type: 'string',
+              description: 'Stellar signing key',
+            },
+            horizon_url: {
+              type: 'string',
+              description: 'Horizon server URL',
+            },
+            url: {
+              type: 'string',
+              description: 'Anchor home URL',
+            },
+          },
+        },
+        ContractEvent: {
+          type: 'object',
+          description: 'A indexed Stellar smart-contract event',
+          properties: {
+            id: {
+              type: 'string',
+              format: 'uuid',
+              description: 'Database record ID',
+            },
+            contractId: {
+              type: 'string',
+              description: 'Stellar contract address',
+            },
+            ledger: {
+              type: 'integer',
+              description: 'Ledger sequence number',
+            },
+            ledgerClosedAt: {
+              type: 'string',
+              format: 'date-time',
+              description: 'Ledger close timestamp',
+            },
+            txHash: {
+              type: 'string',
+              description: 'Transaction hash',
+            },
+            contractEventId: {
+              type: 'string',
+              description: 'Unique event ID from Soroban RPC',
+            },
+            topics: {
+              type: 'string',
+              description: 'JSON-stringified event topics',
+            },
+            value: {
+              type: 'string',
+              description: 'JSON-stringified event value',
+            },
+            type: {
+              type: 'string',
+              description: 'Event type (e.g., contract)',
+            },
+            createdAt: {
+              type: 'string',
+              format: 'date-time',
+              description: 'Record creation timestamp',
+            },
+          },
+        },
       },
     },
     tags: [
@@ -283,6 +422,14 @@ const options: swaggerJsdoc.Options = {
       {
         name: 'SEP-1 Info',
         description: 'Stellar SEP-1 anchor info endpoint',
+      },
+      {
+        name: 'Info',
+        description: 'Stellar SEP-1 anchor information',
+      },
+      {
+        name: 'Events',
+        description: 'Indexed smart-contract events',
       },
     ],
   },

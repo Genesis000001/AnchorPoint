@@ -1,0 +1,17 @@
+{{/*
+=============================================================================
+ConfigMap — non-sensitive environment variables for the AnchorPoint backend.
+Sensitive values (DATABASE_URL, REDIS_URL, etc.) live in a Secret instead.
+=============================================================================
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "anchor-point.configMapName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "anchor-point.labels" . | nindent 4 }}
+data:
+  {{- range $key, $value := .Values.config }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
