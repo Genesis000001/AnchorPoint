@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import multer from 'multer';
+import multer, { MulterError } from 'multer';
+import { fileTypeFromFile } from 'file-type';
 import fs from 'fs';
 import path from 'path';
 import { z } from 'zod';
@@ -17,6 +18,18 @@ if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
+/** Strips anything but alphanumerics/underscore/hyphen so it is safe to use as a filename component. */
+function sanitizeFilenameComponent(value: string, fallback: string): string {
+  const cleaned = value.replace(/[^a-zA-Z0-9_-]/g, '');
+  return cleaned.length > 0 ? cleaned.slice(0, 100) : fallback;
+}
+
+/** Only accepts a short, plain-ASCII extension; anything else (including path separators) is dropped. */
+function sanitizeExtension(originalname: string): string {
+  const ext = path.extname(originalname).toLowerCase();
+  return /^\.[a-z0-9]{1,10}$/.test(ext) ? ext : '';
+}
+
 // Configure Multer for local disk storage
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
@@ -24,11 +37,71 @@ const storage = multer.diskStorage({
   },
   filename: function (req, file, cb) {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
+    const safeField = sanitizeFilenameComponent(file.fieldname, 'file');
+    const safeExt = sanitizeExtension(file.originalname);
+    cb(null, safeField + '-' + uniqueSuffix + safeExt);
   }
 });
 
-const upload = multer({ storage: storage });
+const upload = multer({
+  storage,
+  limits: { fileSize: config.SEP12_MAX_FILE_SIZE_MB * 1024 * 1024 },
+});
+
+/** Runs `upload.any()`, translating Multer's own errors (e.g. oversized files) into a 400 response. */
+function handleUpload(req: Request, res: Response, next: NextFunction) {
+  upload.any()(req, res, (err: unknown) => {
+    if (err instanceof MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({
+          error: `File exceeds maximum allowed size of ${config.SEP12_MAX_FILE_SIZE_MB} MB`,
+        });
+      }
+      return res.status(400).json({ error: err.message });
+    }
+    if (err) {
+      return next(err);
+    }
+    return next();
+  });
+}
+
+/** Magic-number-verified content types accepted for KYC document uploads. */
+const ALLOWED_UPLOAD_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'application/pdf']);
+
+/**
+ * Middleware: inspects the binary content (magic numbers) of files multer has
+ * already written to disk, rejecting anything whose real content type is not
+ * an allow-listed image/PDF format. Applied to PUT /customer after
+ * `upload.any()`, so extension-spoofed or polyglot uploads (e.g. an
+ * executable renamed to `.png`) are caught before the request reaches the
+ * controller.
+ */
+async function validateUploadedFileContent(req: Request, res: Response, next: NextFunction) {
+  const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+  if (files.length === 0) {
+    return next();
+  }
+
+  const cleanup = () =>
+    Promise.all(files.map((file) => fs.promises.unlink(file.path).catch(() => undefined)));
+
+  try {
+    for (const file of files) {
+      const detected = await fileTypeFromFile(file.path);
+      if (!detected || !ALLOWED_UPLOAD_MIME_TYPES.has(detected.mime)) {
+        await cleanup();
+        return res.status(400).json({
+          error: `File "${file.fieldname}" is not a supported document type. Accepted types: ${Array.from(ALLOWED_UPLOAD_MIME_TYPES).join(', ')}`,
+        });
+      }
+    }
+    return next();
+  } catch (error) {
+    await cleanup();
+    return res.status(400).json({ error: 'Failed to validate uploaded file content' });
+  }
+}
 
 const stellarAccountSchema = z
   .string()
@@ -104,7 +177,8 @@ function validateUploadFileSize(req: Request, res: Response, next: NextFunction)
 router.put(
   '/customer',
   authMiddleware,
-  upload.any(),
+  handleUpload,
+  validateUploadedFileContent,
   validate({ body: putCustomerBodySchema }),
   sep12Controller.putCustomer.bind(sep12Controller)
 );

@@ -1,3 +1,4 @@
+import { Request } from 'express';
 import prisma from '../lib/prisma';
 import logger from '../utils/logger';
 
@@ -7,7 +8,19 @@ import logger from '../utils/logger';
 export type AdminAuditAction =
   | 'CONFIG_UPDATE'
   | 'CONFIG_UI_UPDATE'
-  | 'CONFIG_ROLLBACK';
+  | 'CONFIG_ROLLBACK'
+  | 'ADMIN_NETWORK_SWITCH'
+  | 'ADMIN_TRANSACTION_STATUS_UPDATE'
+  | 'ADMIN_PASSWORD_RESET_CONFIRM'
+  | 'ADMIN_TOML_CACHE_PURGE'
+  | 'FEATURE_FLAG_CREATE'
+  | 'FEATURE_FLAG_UPDATE'
+  | 'FEATURE_FLAG_ENABLE'
+  | 'FEATURE_FLAG_DISABLE'
+  | 'FEATURE_FLAG_ROLLOUT_UPDATE'
+  | 'FEATURE_FLAG_TARGET_USERS_ADD'
+  | 'FEATURE_FLAG_TARGET_USERS_REMOVE'
+  | 'FEATURE_FLAG_DELETE';
 
 /**
  * Information about the administrator (or automated actor) responsible for a
@@ -24,6 +37,8 @@ export interface AuditActor {
 export interface RecordConfigChangeParams {
   action: AdminAuditAction;
   actor?: AuditActor;
+  /** Identifier of the entity affected by this action (e.g. `transaction:42`). */
+  targetEntity?: string | null;
   configVersion?: number | null;
   previousVersion?: number | null;
   /** Previous config object, used to compute a field-level diff. */
@@ -37,8 +52,35 @@ export interface RecordConfigChangeParams {
 export interface AuditLogQuery {
   action?: AdminAuditAction;
   actorId?: string;
+  startDate?: Date;
+  endDate?: Date;
   limit?: number;
   offset?: number;
+}
+
+/**
+ * Derives the acting administrator from the request. Falls back gracefully
+ * when the request has not been augmented with an authenticated identity.
+ */
+export function getAuditActor(req: Request): AuditActor {
+  const authed = req as Request & {
+    admin?: { id?: string; email?: string };
+    user?: { id?: string; email?: string; publicKey?: string };
+    apiKey?: { id?: string; label?: string };
+  };
+
+  const identity = authed.admin ?? authed.user;
+  const forwardedFor = req.headers['x-forwarded-for'];
+  const ip = Array.isArray(forwardedFor)
+    ? forwardedFor[0]
+    : forwardedFor?.split(',')[0]?.trim() || req.ip;
+
+  return {
+    id: identity?.id ?? identity?.publicKey ?? authed.apiKey?.id ?? null,
+    email: identity?.email ?? authed.apiKey?.label ?? null,
+    ip: ip ?? null,
+    userAgent: req.headers['user-agent'] ?? null,
+  };
 }
 
 type FieldDiff = Record<string, { before: unknown; after: unknown }>;
@@ -87,6 +129,9 @@ export class AdminAuditService {
   async recordConfigChange(params: RecordConfigChangeParams): Promise<void> {
     try {
       const { changedKeys, diff } = computeConfigDiff(params.before, params.after);
+      const metadata = params.targetEntity
+        ? { targetEntity: params.targetEntity, ...params.metadata }
+        : params.metadata;
 
       await prisma.adminConfigAuditLog.create({
         data: {
@@ -99,7 +144,7 @@ export class AdminAuditService {
           previousVersion: params.previousVersion ?? null,
           changedKeys: changedKeys.length > 0 ? JSON.stringify(changedKeys) : null,
           diff: Object.keys(diff).length > 0 ? JSON.stringify(diff) : null,
-          metadata: params.metadata ? JSON.stringify(params.metadata) : null,
+          metadata: metadata ? JSON.stringify(metadata) : null,
         },
       });
 
@@ -128,6 +173,12 @@ export class AdminAuditService {
     }
     if (query.actorId) {
       where.actorId = query.actorId;
+    }
+    if (query.startDate || query.endDate) {
+      where.createdAt = {
+        ...(query.startDate ? { gte: query.startDate } : {}),
+        ...(query.endDate ? { lte: query.endDate } : {}),
+      };
     }
 
     const [rows, total] = await Promise.all([
